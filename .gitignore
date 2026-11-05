@@ -1,0 +1,15 @@
+.DS_Store
+*.xcuserstate
+xcuserdata/
+build/
+DerivedData/
+dist/
+.env
+.env.*
+*.p12
+*.p8
+*.keychain-db
+*.dSYM/
+App/*.app/
+__pycache__/
+*.pyc

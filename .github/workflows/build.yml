@@ -1,0 +1,119 @@
+name: Build
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 35
+    env:
+      WINDOWSWITCH_DIST_DIR: ${{ github.workspace }}/dist
+      HAS_SIGNING: ${{ github.event_name != 'pull_request' && secrets.MACOS_CERTIFICATE_P12_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: |
+          echo "WINDOWSWITCH_BUILD_ROOT=$RUNNER_TEMP/windowswitch-build" >> "$GITHUB_ENV"
+          xcodebuild -version
+          swift --version
+          command -v xcodegen || brew install xcodegen
+      - name: Audit source
+        run: python3 Scripts/audit-public.py
+      - name: Unit tests
+        run: ./Scripts/test.sh
+      - name: Import optional distribution credentials
+        if: env.HAS_SIGNING == 'true'
+        env:
+          P12_DATA: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          NOTARY_DATA: ${{ secrets.NOTARY_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          : "${P12_PASSWORD:?Missing certificate password}"
+          : "${SIGNING_IDENTITY:?Missing signing identity}"
+          : "${NOTARY_DATA:?Missing notarization key}"
+          : "${NOTARY_KEY_ID:?Missing notarization key ID}"
+          : "${NOTARY_ISSUER_ID:?Missing notarization issuer}"
+          [[ "$SIGNING_IDENTITY" == 'Developer ID Application:'* ]]
+          python3 - <<'PY'
+          import base64, os, pathlib
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          for name, variable in [('distribution.p12','P12_DATA'),('AuthKey.p8','NOTARY_DATA')]:
+              target = root / name
+              target.write_bytes(base64.b64decode(os.environ[variable], validate=True))
+              target.chmod(0o600)
+          PY
+          keychain="$RUNNER_TEMP/windowswitch-signing.keychain-db"
+          password=$(openssl rand -hex 24)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/distribution.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign >/dev/null
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          {
+            echo "WINDOWSWITCH_SIGNING_KEYCHAIN=$keychain"
+            echo "WINDOWSWITCH_SIGNING_IDENTITY=$SIGNING_IDENTITY"
+            echo "WINDOWSWITCH_NOTARIZE=1"
+            echo "NOTARY_KEY_PATH=$RUNNER_TEMP/AuthKey.p8"
+            echo "NOTARY_KEY_ID=$NOTARY_KEY_ID"
+            echo "NOTARY_ISSUER_ID=$NOTARY_ISSUER_ID"
+          } >> "$GITHUB_ENV"
+      - name: Universal Release
+        run: ./Scripts/build.sh
+      - name: Verify release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$WINDOWSWITCH_BUILD_ROOT/Build/Products/Release/WindowSwitch.app/Contents/Info.plist")
+          [[ "$GITHUB_REF_NAME" == "v$version" ]]
+      - name: Package DMG and ZIP
+        run: ./Scripts/package.sh
+      - name: Check public artifacts
+        run: python3 Scripts/audit-public.py --artifacts dist
+      - name: Upload Universal artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: WindowSwitch-universal
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Delete temporary signing credentials
+        if: always() && env.HAS_SIGNING == 'true'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/windowswitch-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/distribution.p12" "$RUNNER_TEMP/AuthKey.p8"
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: WindowSwitch-universal
+          path: dist
+      - name: Verify checksums and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          (cd dist && sha256sum -c SHA256SUMS)
+          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          Universal build for Apple silicon and Intel, macOS 14 or later.
+
+          Open the DMG and drag WindowSwitch to Applications. Grant Accessibility and Screen Recording in the app's Permissions settings. No audio is recorded.
+
+          See the build manifest for the signature type. Ad-hoc builds are not Apple-notarized and may require explicit approval in macOS Privacy & Security. Developer ID signing and notarization are available when repository signing secrets are configured.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "WindowSwitch $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"

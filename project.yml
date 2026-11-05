@@ -1,0 +1,56 @@
+name: WindowSwitch
+options:
+  bundleIdPrefix: io.github.morefreefg
+  deploymentTarget:
+    macOS: "14.0"
+packages:
+  PermissionFlow:
+    path: Vendor/PermissionFlow
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+targets:
+  WindowSwitchCore:
+    type: framework
+    platform: macOS
+    sources: [Sources/Core]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.morefreefg.WindowSwitchCore
+  WindowSwitch:
+    type: application
+    platform: macOS
+    sources: [Sources/App]
+    dependencies:
+      - target: WindowSwitchCore
+      - sdk: ScreenCaptureKit.framework
+      - sdk: ApplicationServices.framework
+      - package: PermissionFlow
+        product: PermissionFlow
+    settings:
+      base:
+        SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/App/WindowSwitch-Bridging-Header.h
+        WINDOWSWITCH_APP_ID: io.github.morefreefg.WindowSwitch
+        PRODUCT_BUNDLE_IDENTIFIER: $(WINDOWSWITCH_APP_ID)
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        INFOPLIST_FILE: Sources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Sources/WindowSwitch.entitlements
+    scheme:
+      testTargets: [WindowSwitchTests]
+  WindowSwitchTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [Tests]
+    dependencies:
+      - target: WindowSwitchCore
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.morefreefg.WindowSwitchTests
