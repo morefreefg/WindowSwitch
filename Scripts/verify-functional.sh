@@ -63,14 +63,18 @@ app_bundle=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app_target/
 fixture_pid=""
 sentinel_pid=""
 cleanup_fixture() {
-  local fixture_process actual_command
-  for fixture_process in "$fixture_pid" "$sentinel_pid"; do
-    [[ -n "$fixture_process" ]] || continue
-    actual_command=$(/bin/ps -ww -p "$fixture_process" -o command= 2>/dev/null || true)
-    if [[ ( "$actual_command" == "$fixture_binary "* || "$actual_command" == "$fixture_binary_canonical "* ) && "$actual_command" == *"--session $session"* ]]; then
-      /bin/kill -TERM "$fixture_process" 2>/dev/null || true
-    fi
-  done
+  python3 - "$fixture_binary" "$fixture_binary_canonical" "$session" <<'PY'
+import os, shlex, signal, subprocess, sys
+paths, session = set(sys.argv[1:3]), sys.argv[3]
+for line in subprocess.check_output(['/bin/ps', '-axo', 'pid=,uid=,command='], text=True).splitlines():
+    parts = line.strip().split(None, 2)
+    if len(parts) != 3 or parts[1] != str(os.getuid()): continue
+    try:
+        args = shlex.split(parts[2])
+        if args[0] in paths and args[args.index('--session') + 1] == session:
+            os.kill(int(parts[0]), signal.SIGTERM)
+    except (ValueError, IndexError, ProcessLookupError): pass
+PY
 }
 trap cleanup_fixture EXIT INT TERM
 
@@ -78,7 +82,7 @@ wait_fixture() {
   python3 - "$session" "$1" <<'PY'
 import glob, json, sys, time
 session, sentinel = sys.argv[1], sys.argv[2] == 'true'
-for _ in range(100):
+for _ in range(300):
     for path in glob.glob('/tmp/codex-windowswitch/fixture-state-*.json'):
         try:
             value = json.load(open(path))
