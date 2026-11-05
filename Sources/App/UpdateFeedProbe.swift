@@ -25,6 +25,12 @@ import Sparkle
                   "versions": appcast.items.map(\.displayVersionString)]
     }
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        let failure = error as NSError
+        // Sparkle reports a successful check with no newer version as an error.
+        if failure.domain == SUSparkleErrorDomain, failure.code == Int(SUError.noUpdateError.rawValue) {
+            if result == nil { result = ["passed": true, "upToDate": true] }
+            return
+        }
         result = ["passed": false, "error": error.localizedDescription]
     }
 }
