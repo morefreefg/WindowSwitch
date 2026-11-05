@@ -6,6 +6,14 @@ signing_identity="${WINDOWSWITCH_SIGNING_IDENTITY:--}"
 signing_options=(--force --sign "$signing_identity" --options runtime)
 if [[ "$signing_identity" == '-' ]]; then signing_options+=(--timestamp=none); else signing_options+=(--timestamp); fi
 if [[ -n "${WINDOWSWITCH_SIGNING_KEYCHAIN:-}" ]]; then signing_options+=(--keychain "$WINDOWSWITCH_SIGNING_KEYCHAIN"); fi
-for framework in "$app_path"/Contents/Frameworks/*.framework(N); do codesign "${signing_options[@]}" "$framework"; done
+for framework in "$app_path"/Contents/Frameworks/*.framework(N); do
+  if [[ "${framework:t}" == Sparkle.framework ]]; then
+    for helper in "$framework/Versions/B/XPCServices/Installer.xpc" "$framework/Versions/B/XPCServices/Downloader.xpc" \
+                  "$framework/Versions/B/Autoupdate" "$framework/Versions/B/Updater.app"; do
+      [[ ! -e "$helper" ]] || codesign "${signing_options[@]}" --preserve-metadata=entitlements "$helper"
+    done
+  fi
+  codesign "${signing_options[@]}" "$framework"
+done
 codesign "${signing_options[@]}" --entitlements "$project_root/Sources/WindowSwitch.entitlements" "$app_path"
 codesign --verify --deep --strict "$app_path"

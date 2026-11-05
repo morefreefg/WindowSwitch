@@ -4,10 +4,15 @@ options:
   deploymentTarget:
     macOS: "14.0"
 packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.1
   PermissionFlow:
     path: Vendor/PermissionFlow
 settings:
   base:
+    MARKETING_VERSION: 0.2.0-rc.1
+    CURRENT_PROJECT_VERSION: 2
     SWIFT_VERSION: "6.0"
     SWIFT_APPROACHABLE_CONCURRENCY: YES
     CODE_SIGN_IDENTITY: "-"
@@ -30,6 +35,8 @@ targets:
       - target: WindowSwitchCore
       - sdk: ScreenCaptureKit.framework
       - sdk: ApplicationServices.framework
+      - package: Sparkle
+        product: Sparkle
       - package: PermissionFlow
         product: PermissionFlow
     settings:

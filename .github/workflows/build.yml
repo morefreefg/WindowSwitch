@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  release:
+    types: [published]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -22,6 +24,8 @@ jobs:
       - name: Toolchain
         run: |
           echo "WINDOWSWITCH_BUILD_ROOT=$RUNNER_TEMP/windowswitch-build" >> "$GITHUB_ENV"
+          echo "WINDOWSWITCH_BUILD_NUMBER=$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then echo "WINDOWSWITCH_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"; fi
           xcodebuild -version
           swift --version
           command -v xcodegen || brew install xcodegen
@@ -78,6 +82,20 @@ jobs:
           [[ "$GITHUB_REF_NAME" == "v$version" ]]
       - name: Package DMG and ZIP
         run: ./Scripts/package.sh
+      - name: Sign update archive
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          : "${SPARKLE_PRIVATE_KEY:?Missing update signing secret}"
+          ./Scripts/sparkle-tools.sh "$RUNNER_TEMP/sparkle"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle-key"
+          python3 Scripts/release-metadata.py dist/*.zip "$RUNNER_TEMP/sparkle/bin/sign_update" "$RUNNER_TEMP/sparkle-key"
+      - name: Remove temporary update key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/sparkle-key"
       - name: Check public artifacts
         run: python3 Scripts/audit-public.py --artifacts dist
       - name: Upload Universal artifacts
@@ -116,4 +134,20 @@ jobs:
 
           See the build manifest for the signature type. Ad-hoc builds are not Apple-notarized and may require explicit approval in macOS Privacy & Security. Developer ID signing and notarization are available when repository signing secrets are configured.
           NOTES
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "WindowSwitch $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"
+          flags=()
+          if [[ "${GITHUB_REF_NAME,,}" == *-rc* ]]; then flags+=(--prerelease); fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "WindowSwitch $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md" "${flags[@]}"
+          fi
+  publish-feed:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: release
+    uses: ./.github/workflows/update-feed.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    secrets:
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}

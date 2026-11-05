@@ -1,18 +1,48 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleName</key><string>WindowSwitch</string>
-<key>CFBundleDisplayName</key><string>WindowSwitch</string>
-<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
-<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleIconFile</key><string>AppIcon.icns</string>
-<key>CFBundleShortVersionString</key><string>0.1.0</string>
-<key>CFBundleVersion</key><string>1</string>
-<key>LSMinimumSystemVersion</key><string>14.0</string>
-<key>LSUIElement</key><true/>
-<key>NSHighResolutionCapable</key><true/>
-<key>NSScreenCaptureUsageDescription</key><string>显示窗口切换器中的窗口缩略图。</string>
-<key>NSAppleEventsUsageDescription</key><string>在你选择新窗口、媒体控制等快捷操作时控制对应应用。</string>
-<key>NSHumanReadableCopyright</key><string>Copyright © 2026 WindowSwitch contributors.</string>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>WindowSwitch</string>
+	<key>CFBundleDisplayName</key>
+	<string>WindowSwitch</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon.icns</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>显示窗口切换器中的窗口缩略图。</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>在你选择新窗口、媒体控制等快捷操作时控制对应应用。</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 WindowSwitch contributors.</string>
+	<key>SUFeedURL</key>
+	<string>https://morefreefg.github.io/WindowSwitch/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>lz/f31g5K/KIopFEUsXcXrmZ8z24LPceb84qnUlgLNA=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>21600</integer>
+	<key>SUEnableSystemProfiling</key>
+	<false/>
+	<key>SURequireSignedFeed</key>
+	<true/>
+</dict>
+</plist>

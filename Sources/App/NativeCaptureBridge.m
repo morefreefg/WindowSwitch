@@ -3,6 +3,11 @@
 #import <math.h>
 #import <ApplicationServices/ApplicationServices.h>
 
+BOOL WSRequestAccessibilityPermission(void) {
+    if (AXIsProcessTrusted()) return YES;
+    return AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES});
+}
+
 typedef int32_t (*WSMainConnection)(void);
 typedef int32_t (*WSWindowBounds)(int32_t, uint32_t, CGRect *);
 typedef CGImageRef (*WSCreateImage)(CGRect, CFArrayRef, uint32_t);

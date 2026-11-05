@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 
+BOOL WSRequestAccessibilityPermission(void);
+
 typedef struct {
     BOOL symbolsAvailable;
     BOOL primaryImageReturned;

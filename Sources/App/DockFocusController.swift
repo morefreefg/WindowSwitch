@@ -452,8 +452,12 @@ private actor DockFocusExecutor {
     private func focusExactly(_ target: WindowItem, protecting stacks: [DockDisplayStack] = []) async -> Bool {
         guard let id = target.windowID else { return false }
         // A single click owns the entire restore/activate/verification sequence.
-        for _ in 0..<3 {
-            guard !Task.isCancelled else { return false }
+        // AppKit can temporarily refuse AX requests during miniaturization.
+        // Keep the same validated target through that transition; normal clicks
+        // still return on their first successful activation.
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(1500))
+        for _ in 0..<8 {
+            guard !Task.isCancelled, ContinuousClock.now < deadline else { return false }
             let accepted = await service.perform(.focus, on: target)
             if accepted, await service.frontmostWindowID() == id,
                DockWindow.visible(pid: target.pid).contains(where: { $0.id == id }) {

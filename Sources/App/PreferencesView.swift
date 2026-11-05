@@ -7,12 +7,13 @@ import SwiftUI
 struct PreferencesView: View {
     @Bindable var preferences: Preferences
     @Bindable var navigation: PreferencesNavigation
+    @Bindable var updates: UpdateController
     var refresh: () -> Void
     var preview: () -> Void
     let permissionGuide: PermissionGuideController
     @State private var permissionsPresented = false
     @State private var loginError = ""
-    private let labelWidth: CGFloat = 170
+    private let labelWidth: CGFloat = 150
 
     var body: some View {
         VStack(spacing: 10) {
@@ -20,7 +21,9 @@ struct PreferencesView: View {
                 switch navigation.selected {
                 case 1: appSwitcher
                 case 2: appearance
-                case 3: about
+                case 3: performance
+                case 4: updateSettings
+                case 5: about
                 default: general
                 }
             }
@@ -33,8 +36,10 @@ struct PreferencesView: View {
                 Spacer()
             }
         }
-        .padding(18)
-        .frame(width: 578, height: 526)
+        .padding(16)
+        .font(.system(size: 12))
+        .controlSize(.small)
+        .frame(width: 640, height: 400)
         .background(.regularMaterial)
         .sheet(isPresented: $permissionsPresented) {
             PermissionsSheet(guide: permissionGuide, status: preferences.runtimeStatus)
@@ -46,6 +51,7 @@ struct PreferencesView: View {
                 loginError = ""
             } catch { loginError = error.localizedDescription }
         }
+        .onChange(of: preferences.showPreviews) { _, _ in refresh() }
         .onChange(of: preferences.backgroundPreloadEnabled) { _, _ in refresh() }
         .onChange(of: preferences.backgroundPreloadThumbnails) { _, _ in refresh() }
         .onChange(of: preferences.backgroundPreloadInterval) { _, value in
@@ -56,12 +62,12 @@ struct PreferencesView: View {
     }
 
     private var general: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 4) {
             Toggle("Run WindowSwitch in the background", isOn: $preferences.runInBackground)
             Text("If enabled, WindowSwitch keeps running in the background and is automatically started when you log in.")
                 .font(.system(size: 11)).foregroundStyle(.secondary).padding(.leading, 18).fixedSize(horizontal: false, vertical: true)
             if !loginError.isEmpty { Text(loginError).font(.caption).foregroundStyle(.orange) }
-            Divider().padding(.vertical, 8)
+            Divider().padding(.vertical, 4)
             Text("Activate the window switcher for")
             HStack {
                 Toggle("all windows:", isOn: $preferences.allWindowsEnabled).frame(width: 190, alignment: .leading)
@@ -94,16 +100,15 @@ struct PreferencesView: View {
                     Text("Screen with Mouse").tag("mouse")
                 }.labelsHidden().frame(width: 185)
             }
-            Divider().padding(.vertical, 8)
+            Divider().padding(.vertical, 4)
             Toggle("Include windows from other spaces", isOn: $preferences.allSpaces)
             Toggle("Include windows from other screens", isOn: $preferences.allScreens)
             Toggle("Show only the most recent window per app", isOn: $preferences.oneWindowPerApp)
                 .help("Applies to the window switcher and quick tap. The current app's window shortcut still shows all its windows.")
-            Toggle("Show full size previews on hover", isOn: $preferences.hoverPreview)
             Toggle("Use shift to cycle backwards", isOn: $preferences.reverseWithShift)
             Toggle("Dock clicks focus windows on the current screen only", isOn: $preferences.dockFocusEnabled)
             Spacer(minLength: 0)
-        }.padding(18).toggleStyle(.checkbox)
+        }.toggleStyle(.checkbox)
     }
 
     private var appSwitcher: some View {
@@ -111,7 +116,7 @@ struct PreferencesView: View {
             Toggle("Show window previews on the app switcher (⌘ + Tab)", isOn: $preferences.applicationSwitcher)
             Text("Use the § / ` key or your arrow keys to switch windows.")
                 .font(.system(size: 11)).foregroundStyle(.secondary).padding(.leading, 18)
-            Divider().padding(.vertical, 8)
+            Divider().padding(.vertical, 4)
             HStack {
                 Text("Delay activation for").frame(width: 135, alignment: .trailing)
                 milliseconds($preferences.applicationInitialDelay)
@@ -122,7 +127,7 @@ struct PreferencesView: View {
                 milliseconds($preferences.applicationSubsequentDelay)
                 Text("ms on subsequent activations")
             }
-            Divider().padding(.vertical, 8)
+            Divider().padding(.vertical, 4)
             Toggle("When activating an app without windows, try to open the default window", isOn: $preferences.openDefaultWindow)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
@@ -131,12 +136,12 @@ struct PreferencesView: View {
                 Text("ms").foregroundStyle(preferences.applicationAutoActivate ? .primary : .secondary)
             }
             Spacer(minLength: 0)
-        }.padding(18).toggleStyle(.checkbox)
+        }.toggleStyle(.checkbox)
     }
 
     private var appearance: some View {
-        ScrollView {
-        VStack(spacing: 12) {
+        VStack(spacing: 7) {
+            Toggle("Show window previews", isOn: $preferences.showPreviews).frame(maxWidth: .infinity, alignment: .leading)
             HStack {
                 Text("Appearance:").frame(width: labelWidth, alignment: .trailing)
                 Picker("", selection: $preferences.theme) {
@@ -192,7 +197,18 @@ struct PreferencesView: View {
                 Text("Fade out:").frame(width: labelWidth, alignment: .trailing)
                 milliseconds($preferences.fadeOutDuration); Text("ms"); Spacer()
             }.disabled(preferences.hideAnimation != "fade")
-            Divider().padding(.vertical, 3)
+            Toggle("Show full size previews on hover", isOn: $preferences.hoverPreview)
+            HStack {
+                Text("Show WindowSwitch in")
+                Toggle("the Dock", isOn: $preferences.showDockIcon)
+                Toggle("the menu bar", isOn: $preferences.showMenuBarIcon)
+            }
+            Spacer(minLength: 0)
+        }.toggleStyle(.checkbox)
+    }
+
+    private var performance: some View {
+        VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 9) {
                 Toggle("Preload windows in the background", isOn: $preferences.backgroundPreloadEnabled)
                 HStack(spacing: 6) {
@@ -212,15 +228,30 @@ struct PreferencesView: View {
                     Text(preferences.preloadStatus).font(.system(size: 11)).foregroundStyle(.secondary).padding(.leading, 18)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
-            Divider().padding(.top, 4)
-            HStack {
-                Text("Show WindowSwitch in")
-                Toggle("the Dock", isOn: $preferences.showDockIcon)
-                Toggle("the menu bar", isOn: $preferences.showMenuBarIcon)
-            }
+            Divider()
+            Text("Previews are static and cached. High quality is loaded when the list opens; background previews stay small and low priority.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
-        }.padding(18).toggleStyle(.checkbox)
-        }.scrollIndicators(.automatic)
+        }.toggleStyle(.checkbox)
+    }
+
+    private var updateSettings: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Toggle("Automatically check for updates", isOn: $updates.automaticChecks).disabled(!updates.supportsInAppUpdates)
+            Text("Checks GitHub for new releases every six hours.").font(.callout).foregroundStyle(.secondary)
+            Toggle("Include RC (pre-release) versions", isOn: $updates.includeRC)
+            Text("Receive release candidates as well as stable versions.").font(.callout).foregroundStyle(.secondary)
+            Toggle("Automatically download and install updates", isOn: $updates.automaticDownloads).disabled(!updates.supportsInAppUpdates)
+            Divider()
+            Text("Updates are downloaded from GitHub and verified before installation.")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                Button("Check for Updates…") { updates.checkForUpdates() }
+                if let date = updates.lastChecked { Text("Last checked: \(date.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary) }
+            }
+            if !updates.status.isEmpty { Text(updates.status).font(.caption).foregroundStyle(.secondary) }
+            Spacer(minLength: 0)
+        }.toggleStyle(.checkbox)
     }
 
     private var about: some View {
@@ -228,12 +259,12 @@ struct PreferencesView: View {
             Image(nsImage: NSImage(named: "AppIcon") ?? NSApp.applicationIconImage)
                 .resizable().frame(width: 64, height: 64)
             Text("WindowSwitch").font(.title.bold())
-            Text("Version 0.1.0").foregroundStyle(.secondary)
+            Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")").foregroundStyle(.secondary)
             Text("A fast, native macOS window switcher.").multilineTextAlignment(.center)
             Spacer()
             Button("Permissions…") { permissionsPresented = true }
-            Button("Restore Defaults") { preferences.restoreDefaults() }
-            Text("PermissionFlow · MIT License").font(.caption).foregroundStyle(.secondary)
+            Button("Restore Defaults") { preferences.restoreDefaults(); updates.restoreDefaults() }
+            Text("PermissionFlow · Sparkle · Open source licenses").font(.caption).foregroundStyle(.secondary)
         }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 

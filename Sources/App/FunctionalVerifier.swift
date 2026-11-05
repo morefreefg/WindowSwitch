@@ -476,7 +476,7 @@ private final class FixtureVerificationRun {
         let suite = "WindowSwitch.Verification.\(session)"
         guard let defaults = UserDefaults(suiteName: suite) else { return }
         let rule = WindowRule(bundleID: bundleID, titlePattern: "WSFixture_(B|C)")
-        defaults.setVolatileDomain(["quickSwitchOnMouseScreen": true, "quickHoldDelay": 200.0, "allSpaces": true, "allScreens": true, "oneWindowPerApp": false,
+        defaults.setVolatileDomain(["screenChoice": "main", "quickSwitchOnMouseScreen": true, "quickHoldDelay": 200.0, "allSpaces": true, "allScreens": true, "oneWindowPerApp": false,
             "windowRules": (try? JSONEncoder().encode([rule])) ?? Data(), "hoverPreview": false], forName: UserDefaults.argumentDomain)
         let controller = SwitchController(preferences: Preferences(defaults: defaults), windowScope: fixturePIDs,
             backgroundResources: { BackgroundResourceSnapshot(idleSeconds: 30, loadPerCore: 0, thermalSeverity: 0, lowPowerMode: false) })
@@ -681,10 +681,15 @@ private final class FixtureVerificationRun {
         _ = await wait { self.focusedWindowID(pid: primary.pid) == primary.windowID }
         _ = await sentinelService.perform(.focus, on: third)
         let sameApp = await waitAsync { (await controller.service.discover(query, cachedOnly: true)).first?.windowID == thirdID }
-        _ = await sentinelService.perform(.focus, on: other)
+        let externalAccepted = await sentinelService.perform(.focus, on: other)
         let anotherApp = await waitAsync { (await controller.service.discover(query, cachedOnly: true)).first?.windowID == other.windowID }
         record("external-app-and-window-focus-update-recency", sameApp && anotherApp ? "passed" : "failed",
-               evidence: ["sameApplicationWindow": "\(sameApp)", "otherApplication": "\(anotherApp)"])
+               evidence: ["sameApplicationWindow": "\(sameApp)", "otherApplication": "\(anotherApp)",
+                          "activationAccepted": "\(externalAccepted)", "expectedPID": "\(other.pid)",
+                          "frontmostPID": "\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0)",
+                          "focusedWindowID": "\(rawFocusedWindowID(pid: other.pid) ?? 0)",
+                          "expectedWindowID": "\(other.windowID ?? 0)",
+                          "firstListedWindowID": "\((await controller.service.discover(query, cachedOnly: true)).first?.windowID ?? 0)"])
     }
 
     private func verifyDockFirstActivation(_ controller: SwitchController, primary: WindowItem, other: WindowItem, screen: NSScreen) async {
@@ -729,10 +734,12 @@ private final class FixtureVerificationRun {
             let onTarget = local.map { self.displayAreas()[0].whole.intersects($0.frame) && !$0.isMinimized } ?? false
             let after = fixtureZOrder()
             let preserved = after.firstIndex(of: otherID).flatMap { s in after.firstIndex(of: remoteID).map { s < $0 } } == true
+            let focusEvidence = await controller.service.focusDiagnostics()
             record("dock-one-activation-\(state)", accepted && focused && onTarget && baseline && preserved ? "passed" : "failed",
                 evidence: ["activationCalls": "1", "accepted": "\(accepted)", "focused": "\(focused)", "onTargetDisplay": "\(onTarget)",
                            "baselineOtherDisplay": "\(baseline)", "otherDisplayOrderPreserved": "\(preserved)",
-                           "before": before.map(String.init).joined(separator: ","), "after": after.map(String.init).joined(separator: ",")])
+                           "before": before.map(String.init).joined(separator: ","), "after": after.map(String.init).joined(separator: ",")]
+                    .merging(focusEvidence, uniquingKeysWith: { _, new in new }))
             if state == "minimized" {
                 for item in await discover(primary.pid) where item.isMinimized { _ = await act(.focus, on: item) }
             }

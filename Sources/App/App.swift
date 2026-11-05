@@ -22,6 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let library = LibraryPanelController()
     private let nativeSwitcher = NativeAppSwitcherObserver()
     private let permissionGuide = PermissionGuideController()
+    private let updates = UpdateController()
+    private var setupWindow: NSWindow?
+    private var setupPrompted = false
     private var settingsOnly = false
     private var statusItem: NSStatusItem?
     private var settingsWindow: NSWindow?
@@ -40,6 +43,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             Task { await FunctionalVerifier.run() }
             return
         }
+        if arguments.contains("--update-feed-smoke") {
+            Task {
+                let probe = UpdateFeedProbe(); let result = await probe.run()
+                if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted,.sortedKeys]) {
+                    try? data.write(to: URL(fileURLWithPath: "/tmp/codex-windowswitch/update-feed.json"))
+                }
+                NSApp.terminate(nil)
+            }
+            return
+        }
         if arguments.contains("--diagnose") { diagnose(); return }
         if arguments.contains("--input-parity-smoke") {
             let checks = controller.validateInputState()
@@ -48,6 +61,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 try? data.write(to: URL(fileURLWithPath: "/tmp/codex-windowswitch/input-parity.json"))
             }
             NSApp.terminate(nil); return
+        }
+        if arguments.contains("--setup-smoke") {
+            makeMenu(); showSetup(); refreshHooks()
+            Task {
+                try? await Task.sleep(for: .milliseconds(800))
+                if CGPreflightScreenCaptureAccess(), let window = setupWindow {
+                    try? captureSettingsWindow(window, to: "/tmp/codex-windowswitch/setup.png")
+                } else if let view = setupWindow?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: bitmap)
+                    try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/codex-windowswitch/setup.png"))
+                }
+                let snapshot: [String: Any] = ["accessibility": AXIsProcessTrusted(), "screenRecording": CGPreflightScreenCaptureAccess(),
+                    "ready": permissionsReady, "wizardVisible": setupWindow?.isVisible == true, "hooksStopped": !hotkeys.running,
+                    "maintenanceStopped": !maintenancePermission]
+                if let data = try? JSONSerialization.data(withJSONObject: snapshot, options: [.prettyPrinted,.sortedKeys]) {
+                    try? data.write(to: URL(fileURLWithPath: "/tmp/codex-windowswitch/setup.json"))
+                }
+                setupWindow?.close(); NSApp.terminate(nil)
+            }
+            return
         }
         if arguments.contains("--benchmark-discovery") {
             Task {
@@ -105,18 +138,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         makeMenu()
         controller.prepareInterface()
-        if !settingsOnly, preferences.runInBackground, SMAppService.mainApp.status == .notRegistered {
-            do { try SMAppService.mainApp.register() }
-            catch { loginItemError = "登录启动未能开启：\(error.localizedDescription)" }
-        }
         refreshHooks()
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshHooks() }
         }
-        if settingsOnly || !AXIsProcessTrusted() || !UserDefaults.standard.bool(forKey: "hasLaunched") {
-            showSettings()
-            UserDefaults.standard.set(true, forKey: "hasLaunched")
-        }
+        if !permissionsReady { showSetup() }
+        else if settingsOnly { showSettings() }
+        UserDefaults.standard.set(true, forKey: "hasLaunched")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -126,7 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        showSettings(); return true
+        if permissionsReady { showSettings() } else { showSetup() }; return true
     }
 
     private func makeMenu() {
@@ -134,6 +162,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         item.button?.image = NSImage(systemSymbolName: "rectangle.stack", accessibilityDescription: "WindowSwitch")
         let menu = NSMenu()
         menu.addItem(withTitle: "WindowSwitch 设置…", action: #selector(showSettings), keyEquivalent: ",").target = self
+        menu.addItem(withTitle: "检查更新…", action: #selector(checkForUpdates), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "授权向导…", action: #selector(showSetup), keyEquivalent: "").target = self
         menu.addItem(withTitle: "切换窗口", action: #selector(showWindows), keyEquivalent: "").target = self
         menu.addItem(withTitle: "最近文档…", action: #selector(showDocuments), keyEquivalent: "").target = self
         menu.addItem(withTitle: "开始使用（检测旧工具冲突）", action: #selector(resumeAfterSetup), keyEquivalent: "").target = self
@@ -153,6 +183,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             preferences.runtimeStatus = "当前仅显示设置；可从菜单栏选择“开始使用”。"
             return
         }
+        guard permissionsReady, setupWindow?.isVisible != true else {
+            hotkeys.stop(); dockFocus.stop(); nativeSwitcher.stop(); controller.resetInput()
+            controller.stopBackgroundPreloading()
+            if maintenancePermission { maintenancePermission = false; Task { await controller.service.stopBackgroundMaintenance() } }
+            preferences.runtimeStatus = "请先完成授权向导。已授权的项目不会重复申请。"
+            statusItem?.button?.toolTip = "WindowSwitch · 需要授权"
+            if !permissionsReady && !setupPrompted { showSetup() }
+            return
+        }
+        if preferences.runInBackground, SMAppService.mainApp.status == .notRegistered {
+            do { try SMAppService.mainApp.register() } catch { loginItemError = error.localizedDescription }
+        }
+        setupPrompted = false
+        updates.start()
         let trusted = AXIsProcessTrusted()
         if trusted != maintenancePermission {
             maintenancePermission = trusted
@@ -194,9 +238,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func showSettings() {
         controller.cancel()
         if settingsWindow == nil {
-            let view = PreferencesView(preferences: preferences, navigation: settingsNavigation, refresh: { [weak self] in self?.refreshHooks() },
+            let view = PreferencesView(preferences: preferences, navigation: settingsNavigation, updates: updates, refresh: { [weak self] in self?.refreshHooks() },
                                        preview: { [weak self] in self?.controller.showDemo() }, permissionGuide: permissionGuide)
-            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 578, height: 526),
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 640, height: 400),
                                   styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             window.title = "WindowSwitch Preferences"; window.isReleasedWhenClosed = false; window.delegate = self
             window.isOpaque = true
@@ -207,9 +251,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.toolbar = settingsToolbar.makeToolbar()
             window.contentView = NSHostingView(rootView: view); window.center(); settingsWindow = window
         }
-        NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.titlebarAppearsTransparent = false
-        settingsWindow?.makeKeyAndOrderFront(nil)
+        if ProcessInfo.processInfo.arguments.contains("--smoke-test") { settingsWindow?.orderFrontRegardless() }
+        else { NSApp.activate(ignoringOtherApps: true); settingsWindow?.makeKeyAndOrderFront(nil) }
     }
     private func captureSettingsWindow(_ window: NSWindow, to path: String) throws {
         // Capture our complete window, including the toolbar and traffic lights.
@@ -238,26 +282,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let segmentFrame: CGRect? = control.convert(control.bounds, to: nil)
             let closeFrame = window.standardWindowButton(.closeButton).map { $0.convert($0.bounds, to: nil) }
             let alignment = segmentFrame.flatMap { segment in closeFrame.map { abs(segment.midY - $0.midY) } }
-            checks.append(["pane": title, "selectionMatches": settingsNavigation.selected == index,
+            func scrollCount(_ view: NSView) -> Int { (view is NSScrollView ? 1 : 0) + view.subviews.reduce(0) { $0 + scrollCount($1) } }
+            checks.append(["pane": title, "scrollViews": window.contentView.map(scrollCount) ?? -1, "selectionMatches": settingsNavigation.selected == index,
                            "headerHeight": headerHeight, "trafficLightAlignment": alignment ?? -1,
                            "compact": headerHeight <= 50, "aligned": alignment.map { $0 <= 4 } ?? false,
                            "nativeLiquidGlass": { if #available(macOS 26.0, *) { return window.toolbar?.items.contains { $0.view is NSGlassEffectView } ?? false }; return false }(),
                            "image": path])
         }
         let passed = checks.allSatisfy { $0["selectionMatches"] as? Bool == true
-            && $0["compact"] as? Bool == true && $0["aligned"] as? Bool == true }
+            && $0["compact"] as? Bool == true && $0["aligned"] as? Bool == true && $0["scrollViews"] as? Int == 0 }
         let report: [String: Any] = ["passed": passed, "checks": checks]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: URL(fileURLWithPath: (output as NSString).deletingPathExtension + ".json"))
     }
 
-    @objc private func showWindows() { controller.begin() }
+    private var permissionsReady: Bool {
+        PermissionReadiness(accessibility: AXIsProcessTrusted(), screenRecording: CGPreflightScreenCaptureAccess(), previewsEnabled: preferences.showPreviews).canStart
+    }
+    @objc private func showSetup() {
+        controller.cancel(); hotkeys.stop(); dockFocus.stop(); nativeSwitcher.stop()
+        if setupWindow == nil {
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 480, height: 340), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = "WindowSwitch 设置向导"; window.isReleasedWhenClosed = false; window.delegate = self
+            window.contentView = NSHostingView(rootView: SetupWizard(preferences: preferences, guide: permissionGuide, finish: { [weak self] in
+                guard let self, self.permissionsReady else { return }
+                self.setupWindow?.close(); self.setupWindow = nil; self.permissionGuide.close()
+                UserDefaults.standard.set(true, forKey: "hasCompletedSetup")
+                self.settingsOnly = false; self.refreshHooks()
+            }))
+            window.center(); setupWindow = window
+        }
+        setupPrompted = true
+        if ProcessInfo.processInfo.arguments.contains("--setup-smoke") { setupWindow?.orderFrontRegardless() }
+        else { NSApp.activate(ignoringOtherApps: true); setupWindow?.makeKeyAndOrderFront(nil) }
+    }
+    @objc private func checkForUpdates() { controller.cancel(); updates.checkForUpdates() }
+    @objc private func showWindows() { if permissionsReady && setupWindow?.isVisible != true { controller.begin() } else { showSetup() } }
     @objc private func showDocuments() { library.showDocuments() }
     @objc private func toggleHotkeys() { preferences.enabled.toggle(); refreshHooks() }
     @objc private func toggleDockFocus() { preferences.dockFocusEnabled.toggle(); refreshHooks() }
     @objc private func resumeAfterSetup() { settingsOnly = false; refreshHooks() }
     @objc private func quit() { NSApp.terminate(nil) }
     func windowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, window === setupWindow { setupWindow = nil; permissionGuide.close() }
         if !preferences.runInBackground && !settingsOnly { NSApp.terminate(nil) }
     }
 

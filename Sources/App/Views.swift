@@ -25,7 +25,7 @@ struct SwitcherView: View {
     private func windowCell(_ item: WindowItem, dark: Bool) -> some View {
         let selected = (!controller.nativeSession || controller.browsingApplicationWindows)
             && controller.displayedSelection.selected?.id == item.id
-        return WindowPreview(item: item, image: item.windowID.flatMap { controller.thumbnails[$0] },
+        return WindowPreview(item: item, image: controller.preferences.showPreviews ? item.windowID.flatMap { controller.thumbnails[$0] } : nil,
                                      selected: selected, dark: dark, classic: controller.preferences.theme == "classic",
                                      showIcons: controller.preferences.showAppIcons && !controller.nativeSession,
                                      centerIcon: controller.preferences.iconScale >= 1,

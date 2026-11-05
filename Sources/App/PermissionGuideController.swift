@@ -19,10 +19,12 @@ final class PermissionGuideController {
 
     func showAccessibility() {
         guard !AXIsProcessTrusted() else { close(); return }
+        _ = WSRequestAccessibilityPermission()
         show(.accessibility)
     }
     func showScreenRecording() {
         guard !CGPreflightScreenCaptureAccess() else { close(); return }
+        _ = CGRequestScreenCaptureAccess()
         show(.screenRecording)
     }
 

@@ -66,23 +66,9 @@ nonisolated enum ShortcutModifier: String, CaseIterable, Codable, Identifiable {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        defaults.register(defaults: ["enabled": true, "dockFocusEnabled": true, "singleWindowFocus": true, "windowModifier": "command", "currentModifier": "option",
-            "applicationSwitcher": true, "applicationModifier": "command", "nativeAppEnhancement": true,
-            "applicationInitialDelay": 500.0, "applicationSubsequentDelay": 300.0, "openDefaultWindow": true,
-            "applicationAutoActivate": false, "applicationAutoActivateDelay": 500.0, "scrollWindowActions": true,
-            "includeMinimized": false,
-            "includeHidden": true, "allSpaces": true, "allScreens": true, "includePalettes": false, "oneWindowPerApp": true,
-            "thumbnailSize": 185.0, "showPreviews": true, "showDelay": 80.0,
-            "quickSwitchOnMouseScreen": true, "quickHoldDelay": 200.0,
-            "excludedApplications": "", "screenChoice": "active", "hoverPreview": false,
-            "hoverDelay": 800.0, "backgroundOpacity": 0.35, "showAppIcons": true,
-            "iconScale": 1.0, "previewQuality": 4, "backgroundBlur": false, "theme": "system"])
-        defaults.register(defaults: ["allWindowsEnabled": true, "currentWindowEnabled": true, "reverseWithShift": true,
-            "runInBackground": true, "showDockIcon": false, "showMenuBarIcon": true,
-            "hideAnimation": "fade", "backgroundRGB": "0,0,0",
-            "fadeInDuration": 100.0, "fadeOutDuration": 200.0,
-            "backgroundPreloadEnabled": false, "backgroundPreloadThumbnails": true,
-            "backgroundPreloadInterval": 30.0])
+        let settingsURL = Bundle.main.url(forResource: "DefaultSettings", withExtension: "plist")!
+        let settings = NSDictionary(contentsOf: settingsURL) as? [String: Any] ?? [:]
+        defaults.register(defaults: settings)
         allWindowsEnabled = defaults.bool(forKey: "allWindowsEnabled")
         currentWindowEnabled = defaults.bool(forKey: "currentWindowEnabled")
         reverseWithShift = defaults.bool(forKey: "reverseWithShift")

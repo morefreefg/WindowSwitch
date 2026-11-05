@@ -635,7 +635,7 @@ import WindowSwitchCore
     private func scheduleFullPreview() {
         hoverWork?.cancel(); fullPreview?.orderOut(nil)
         if nativeSession && !browsingApplicationWindows { return }
-        guard preferences.hoverPreview, let item = displayedSelection.selected, let id = item.windowID else { return }
+        guard preferences.showPreviews, preferences.hoverPreview, let item = displayedSelection.selected, let id = item.windowID else { return }
         let token = session
         hoverWork = Task {
             try? await Task.sleep(for: .milliseconds(preferences.hoverDelay))
