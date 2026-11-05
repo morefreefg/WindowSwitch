@@ -49,7 +49,7 @@ GitHub Releases stores the Universal update archives; GitHub Pages serves an Ed2
 
 Automatic checks run every six hours by default. RC releases are included by default, alongside stable releases; both preferences are configurable in Updates. Automatic download/install is opt-in, with a native Check for Updates action available from the menu bar and settings. Releases marked RC are published as GitHub pre-releases.
 
-The first release with this updater is 0.2.0-rc.1. Earlier builds must be upgraded manually once. Ad-hoc application signing does not provide the same macOS permission identity stability as a Developer ID certificate; the separate Ed25519 update signature verifies authenticity but does not replace Apple notarization.
+The first working release with this updater is 0.2.0-rc.2. Earlier builds must be upgraded manually once. Ad-hoc application signing does not provide the same macOS permission identity stability as a Developer ID certificate; the separate Ed25519 update signature verifies authenticity but does not replace Apple notarization.
 
 Settings use six compact native tabs with no scrolling. New installs and Restore Defaults use `Sources/App/Resources/DefaultSettings.plist`, containing functional/appearance settings only. The defaults select the mouse display, exclude other displays/Spaces, use High previews and 100 ms fades, and enable idle-time prefetching every 30 seconds.
 

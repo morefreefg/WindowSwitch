@@ -1,7 +1,11 @@
-import importlib.util,pathlib,unittest
+import importlib.util,pathlib,plistlib,unittest
 spec=importlib.util.spec_from_file_location('feed',pathlib.Path(__file__).parents[1]/'Scripts/update-feed.py')
 feed=importlib.util.module_from_spec(spec);spec.loader.exec_module(feed)
 class FeedTests(unittest.TestCase):
+    def test_signed_feed_has_required_archive_verification(self):
+        info=plistlib.loads((pathlib.Path(__file__).parents[1]/'Sources/Info.plist').read_bytes())
+        self.assertTrue(info['SURequireSignedFeed'])
+        self.assertTrue(info['SUVerifyUpdateBeforeExtraction'])
     def release(self,tag='v0.2.0-rc.1',draft=False,prerelease=True):
         return {'tag_name':tag,'draft':draft,'prerelease':prerelease,'html_url':'https://github.com/morefreefg/WindowSwitch/releases/tag/'+tag,
             'assets':[{'name':'app.update.json','browser_download_url':tag}]}

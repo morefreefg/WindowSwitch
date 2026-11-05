@@ -44,5 +44,7 @@
 	<false/>
 	<key>SURequireSignedFeed</key>
 	<true/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 </dict>
 </plist>
