@@ -3,6 +3,12 @@ import Observation
 import SwiftUI
 import QuartzCore
 import WindowSwitchCore
+import os
+
+private let switchLog = Logger(subsystem: "io.github.morefreefg.WindowSwitch", category: "switcher")
+private func describe(_ windows: [WindowItem]) -> String {
+    windows.map { "\($0.appName)#\($0.windowID.map(String.init) ?? "-")" }.joined(separator: ", ")
+}
 
 @Observable final class SwitchController {
     let preferences: Preferences
@@ -59,6 +65,7 @@ import WindowSwitchCore
     @ObservationIgnored private var preloadedThumbnails: [UInt32: PreloadedThumbnail] = [:]
     @ObservationIgnored private var preloadedWindows: [WindowItem] = []
     private var nativeListFrame: CGRect?
+    private var sessionBegan = Date()
     private var nativeSelectedAppFrame: CGRect?
 
     var switcherLayout: SwitcherLayout {
@@ -258,6 +265,7 @@ import WindowSwitchCore
         cumulativeMouseDistance = 0
         pendingSteps = reverse ? -1 : 1; commitWhenLoaded = false; message = ""
         startingPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        sessionBegan = Date()
         let token = session
         let screen = preferredScreen()
         let query = listQuery(screen: screen)
@@ -310,6 +318,8 @@ import WindowSwitchCore
                 guard !Task.isCancelled, session == token, active else { return }
             }
             windows = listItems(windows)
+            let evidence = await service.discoveryEvidenceSummary()
+            switchLog.notice("list opened mode=\(String(describing: self.mode), privacy: .public) after=\(Int(Date().timeIntervalSince(self.sessionBegan) * 1000), privacy: .public)ms items=[\(describe(windows), privacy: .public)] \(evidence, privacy: .public)")
             dropPreviewsBelowSettings(windows)
             applyPreloadedThumbnails(to: windows)
             spaceNumbers = SpaceService.badges(windowIDs: windows.filter { !$0.isOnScreen }.compactMap(\.windowID))
@@ -345,6 +355,11 @@ import WindowSwitchCore
                 incomplete = !(await service.discoveryStatus()).metadataComplete
                 let old = applicationWindowsOnly ? applicationWindows : selection
                 guard old.items != windows else { continue }
+                let oldIDs = Set(old.items.map(\.id))
+                let added = windows.filter { !oldIDs.contains($0.id) }
+                if !added.isEmpty {
+                    switchLog.notice("list grew after=\(Int(Date().timeIntervalSince(self.sessionBegan) * 1000), privacy: .public)ms added=[\(describe(added), privacy: .public)] now=[\(describe(windows), privacy: .public)]")
+                }
                 if applicationWindowsOnly {
                     applicationWindows.start(windows, advance: false)
                     applicationWindows.search = old.search

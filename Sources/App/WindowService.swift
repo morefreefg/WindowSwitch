@@ -157,6 +157,12 @@ actor WindowService {
         if recency.record(pid: pid, windowID: windowID) { inventoryPublishRevision &+= 1 }
     }
 
+    func discoveryEvidenceSummary() -> String {
+        let e = lastDiscoveryEvidence
+        func value(_ key: String) -> String { e[key].map { String(describing: $0) } ?? "?" }
+        return "strategy=\(value("strategy")) metadataComplete=\(value("metadataComplete")) provisional=\(value("provisionalRows")) "
+            + "pending=\(value("pendingClassification")) foregroundAXScans=\(value("foregroundAXScans")) dropped=\(value("droppedOnScreen"))"
+    }
     func discoveryStatus() -> (metadataComplete: Bool, provisionalRows: Int, revision: UInt64) {
         (lastDiscoveryEvidence["metadataComplete"] as? Bool ?? false,
          lastDiscoveryEvidence["provisionalRows"] as? Int ?? 0, inventoryPublishRevision)
@@ -487,7 +493,19 @@ actor WindowService {
             return left.id < right.id
         }
         result = recency.ordered(result)
+        // Diagnostics: visible windows of candidate apps that this query left out, and why.
+        let returnedIDs = Set(result.compactMap(\.windowID))
+        let candidatePIDs = Set(candidates.map(\.pid))
+        let dropped: [String] = compositor.compactMap { live in
+            guard candidatePIDs.contains(live.pid), live.onScreen, live.layer == 0, live.frame.width >= 40, live.frame.height >= 30,
+                  !returnedIDs.contains(live.id),
+                  query.allScreens || query.screenBounds.map({ $0.intersects(live.frame) }) != false else { return nil }
+            let inInventory = (inventory[live.pid] ?? [:]).values.contains { $0.windowID == live.id }
+            let classified = inventoryClassifiedCGIDs[live.pid]?.contains(live.id) == true
+            return "\(live.pid):\(live.id) inventory=\(inInventory) classified=\(classified) closed=\(closedWindowIDs[live.id] != nil)"
+        }
         lastDiscoveryEvidence = ["strategy": "inventory-cache", "totalMS": Date().timeIntervalSince(began) * 1000,
+            "droppedOnScreen": dropped,
             "workspaceMS": workspaceMS, "compositorMS": cgMS, "candidateApplications": candidates.count,
             "windowCount": result.count, "foregroundAXScans": foregroundScans,
             "inventoryComplete": candidates.allSatisfy { inventoryUpdated[$0.pid] != nil },
