@@ -66,6 +66,9 @@ private func describe(_ windows: [WindowItem]) -> String {
     @ObservationIgnored private var preloadedWindows: [WindowItem] = []
     private var nativeListFrame: CGRect?
     private var sessionBegan = Date()
+    private var windowModifierDownAt: CFTimeInterval?
+    private var windowModifierUpAt: CFTimeInterval?
+    private var keySinceWindowModifier = true
     private var nativeSelectedAppFrame: CGRect?
 
     var switcherLayout: SwitcherLayout {
@@ -130,7 +133,12 @@ private func describe(_ windows: [WindowItem]) -> String {
             return false
         }
         let key = event.getIntegerValueField(.keyboardEventKeycode)
-        if type == .keyUp { return suppressedKeys.remove(key) != nil }
+        if type == .keyUp {
+            if suppressedKeys.remove(key) != nil { return true }
+            return recoverSwallowedQuickTap(key: key, event: event)
+        }
+        if type == .flagsChanged { trackWindowModifier(event.flags) }
+        if type == .keyDown { keySinceWindowModifier = true }
         if type == .flagsChanged {
             if active && !heldModifier.isEmpty && !event.flags.contains(heldModifier) {
                 if nativeSession && !browsingApplicationWindows { cancel() } else { commit() }
@@ -138,7 +146,14 @@ private func describe(_ windows: [WindowItem]) -> String {
             return false
         }
         guard type == .keyDown else { return false }
-        if !active && suppressedKeys.contains(key) { return true }
+        if !active && suppressedKeys.contains(key) {
+            // Only an auto-repeat of a key the switcher consumed is swallowed. A fresh press
+            // means its key-up never reached us (it can be lost while another app activates):
+            // drop the stale entry instead of eating this press.
+            if event.getIntegerValueField(.keyboardEventAutorepeat) != 0 { return true }
+            switchLog.notice("stale suppressed key \(key, privacy: .public) cleared on a fresh press")
+            suppressedKeys.remove(key)
+        }
         let shiftHeld = event.flags.contains(.maskShift)
         let reverse = shiftHeld && preferences.reverseWithShift
         if active {
@@ -232,6 +247,35 @@ private func describe(_ windows: [WindowItem]) -> String {
         switchLog.debug("hotkey accepted mode=\(String(describing: requested), privacy: .public)")
         if let requested { begin(mode: requested, modifier: modifier.flag, reverse: reverse) }
         suppressedKeys.insert(key)
+        return true
+    }
+
+    private func trackWindowModifier(_ flags: CGEventFlags) {
+        let flag = preferences.windowModifier.flag
+        let held = flags.intersection([.maskCommand, .maskAlternate, .maskControl]) == flag
+        if held, windowModifierDownAt == nil || windowModifierUpAt != nil {
+            windowModifierDownAt = CACurrentMediaTime(); windowModifierUpAt = nil; keySinceWindowModifier = false
+        } else if !flags.contains(flag), windowModifierDownAt != nil, windowModifierUpAt == nil {
+            windowModifierUpAt = CACurrentMediaTime()
+        }
+    }
+
+    /// macOS sometimes swallows the Tab key-down of a quick ⌘Tab inside WindowServer, right
+    /// after another app was activated, while the modifier and the Tab key-up still arrive.
+    /// A Tab key-up with no key-down since the window modifier went down (and the modifier
+    /// still held, or released moments ago) is that lost tap: perform it now.
+    private func recoverSwallowedQuickTap(key: Int64, event: CGEvent) -> Bool {
+        guard key == 48, !active, preferences.enabled, preferences.allWindowsEnabled, preferences.quickSwitchOnMouseScreen,
+              let downAt = windowModifierDownAt, !keySinceWindowModifier else { return false }
+        let flag = preferences.windowModifier.flag
+        let now = CACurrentMediaTime()
+        let stillHeld = event.flags.intersection([.maskCommand, .maskAlternate, .maskControl]) == flag
+        let justReleased = windowModifierUpAt.map { now - $0 < 0.3 } ?? false
+        guard stillHeld || justReleased, now - downAt < 2 else { return false }
+        keySinceWindowModifier = true
+        switchLog.notice("recovered a quick tap whose Tab key-down never arrived (modifier \(stillHeld ? "held" : "just released", privacy: .public))")
+        begin(mode: .windows, modifier: flag, reverse: event.flags.contains(.maskShift) && preferences.reverseWithShift)
+        commit()
         return true
     }
 
