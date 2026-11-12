@@ -24,8 +24,9 @@ final class PermissionGuideController {
     }
     func showScreenRecording() {
         guard !CGPreflightScreenCaptureAccess() else { close(); return }
-        _ = CGRequestScreenCaptureAccess()
         show(.screenRecording)
+        // 同步调用会在主线程转出 main queue 并驱动嵌套 runloop，SwiftUI 在其中重算 body 会触发 MainActor 执行器断言
+        DispatchQueue.global(qos: .userInitiated).async { _ = CGRequestScreenCaptureAccess() }
     }
 
     private func show(_ pane: PermissionFlowPane) {
