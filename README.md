@@ -28,7 +28,7 @@ The first-run wizard checks permissions before enabling window switching or Dock
 
 The initial release uses an **ad-hoc signature and is not Apple-notarized**. macOS may require explicit approval in System Settings → Privacy & Security. This is not a Developer ID signature. See [release signing](Docs/Releasing.md) for the optional Developer ID/notarization setup.
 
-Defaults: Command+Tab for the window list, Option+` for the current application's windows. Quick tap is enabled, with a 500 ms hold threshold. Shortcuts and display filters are configurable.
+Defaults: Command+Tab for the window list, Option+` for the current application's windows. Quick tap is enabled, with a 300 ms hold threshold. Shortcuts and display filters are configurable.
 
 ## Build
 
