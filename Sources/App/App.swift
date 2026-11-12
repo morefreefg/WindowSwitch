@@ -142,7 +142,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshHooks() }
         }
-        if !permissionsReady { showSetup() }
+        // 首次启动必定走一遍向导：权限齐备不代表用户见过授权引导
+        if !permissionsReady || !UserDefaults.standard.bool(forKey: "hasCompletedSetup") { showSetup() }
         else if settingsOnly { showSettings() }
         UserDefaults.standard.set(true, forKey: "hasLaunched")
     }
