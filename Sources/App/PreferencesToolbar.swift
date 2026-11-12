@@ -5,67 +5,46 @@ import Observation
     var selected = 0
 }
 
-/// Own the titlebar explicitly: SwiftUI's automatic tab promotion gives the
-/// fixed-size preferences window an oversized header on newer macOS releases.
+/// Native preferences tabs: selectable toolbar items with symbols, as in the
+/// system's own Settings windows. AppKit draws the Liquid Glass selection.
 final class PreferencesToolbar: NSObject, NSToolbarDelegate {
     static let titles = ["General", "App Switcher", "Appearance", "Performance", "Updates", "About"]
-    private static let tabsID = NSToolbarItem.Identifier("WindowSwitch.PreferenceTabs")
+    private static let symbols = ["gearshape", "rectangle.on.rectangle", "paintpalette", "gauge.with.dots.needle.67percent",
+                                  "arrow.triangle.2.circlepath", "info.circle"]
+    private static let identifiers = titles.indices.map { NSToolbarItem.Identifier("WindowSwitch.Pane.\($0)") }
     private let navigation: PreferencesNavigation
-    private(set) var control: NSSegmentedControl?
+    private weak var toolbar: NSToolbar?
 
     init(navigation: PreferencesNavigation) { self.navigation = navigation }
 
     func makeToolbar() -> NSToolbar {
         let toolbar = NSToolbar(identifier: "WindowSwitch.Preferences")
         toolbar.delegate = self
-        toolbar.displayMode = .labelOnly
+        toolbar.displayMode = .iconAndLabel
         toolbar.allowsUserCustomization = false
         toolbar.autosavesConfiguration = false
-        toolbar.centeredItemIdentifiers = [Self.tabsID]
+        toolbar.selectedItemIdentifier = Self.identifiers[navigation.selected]
+        self.toolbar = toolbar
         return toolbar
     }
 
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.flexibleSpace, Self.tabsID, .flexibleSpace]
-    }
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        toolbarDefaultItemIdentifiers(toolbar)
-    }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { Self.identifiers }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { Self.identifiers }
+    func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { Self.identifiers }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        guard itemIdentifier == Self.tabsID else { return nil }
-        let segments = NSSegmentedControl(labels: Self.titles, trackingMode: .selectOne,
-                                          target: self, action: #selector(selectPane(_:)))
-        segments.selectedSegment = navigation.selected
-        segments.font = .systemFont(ofSize: 12)
-        segments.segmentStyle = .capsule
-        segments.segmentDistribution = .fit
-        if #available(macOS 27.0, *) { segments.role = .tabs }
-        for (index, width) in [64.0, 90, 88, 98, 72, 58].enumerated() { segments.setWidth(width, forSegment: index) }
-        let tabSize = NSSize(width: ceil(segments.fittingSize.width), height: 26)
-        segments.frame = CGRect(origin: .zero, size: tabSize)
-        control = segments
+        guard let index = Self.identifiers.firstIndex(of: itemIdentifier) else { return nil }
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-        item.label = "Preferences"
-        item.isBordered = false
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView(frame: segments.frame)
-            glass.style = .regular; glass.cornerRadius = 13
-            if #available(macOS 27.0, *) { glass.effectIsInteractive = true }
-            glass.contentView = segments
-            segments.autoresizingMask = [.width, .height]
-            item.view = glass
-        } else { item.view = segments }
-        if let view = item.view {
-            view.widthAnchor.constraint(equalToConstant: tabSize.width).isActive = true
-            view.heightAnchor.constraint(equalToConstant: tabSize.height).isActive = true
-        }
-        item.minSize = tabSize
-        item.maxSize = tabSize
+        item.label = Self.titles[index]
+        item.image = NSImage(systemSymbolName: Self.symbols[index], accessibilityDescription: Self.titles[index])
+        item.target = self; item.action = #selector(selectPane(_:)); item.tag = index
         return item
     }
-    @objc private func selectPane(_ sender: NSSegmentedControl) {
-        guard Self.titles.indices.contains(sender.selectedSegment) else { return }
-        navigation.selected = sender.selectedSegment
+    var selectedIndex: Int? { toolbar?.selectedItemIdentifier.flatMap { Self.identifiers.firstIndex(of: $0) } }
+    func select(_ index: Int) {
+        guard Self.titles.indices.contains(index) else { return }
+        toolbar?.selectedItemIdentifier = Self.identifiers[index]
+        navigation.selected = index
     }
+    @objc private func selectPane(_ sender: NSToolbarItem) { select(sender.tag) }
 }

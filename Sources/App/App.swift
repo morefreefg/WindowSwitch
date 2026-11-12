@@ -248,7 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.backgroundColor = .windowBackgroundColor
             window.titlebarAppearsTransparent = false
             window.titleVisibility = .hidden
-            window.toolbarStyle = .unifiedCompact
+            window.toolbarStyle = .unified
             window.toolbar = settingsToolbar.makeToolbar()
             window.contentView = NSHostingView(rootView: view); window.center(); settingsWindow = window
         }
@@ -269,29 +269,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func validateSettingsHeader(_ window: NSWindow, output: String) async throws {
-        guard let control = settingsToolbar.control else {
+        guard window.toolbar != nil else {
             throw NSError(domain: "WindowSwitch.SettingsCapture", code: 2)
         }
         var checks: [[String: Any]] = []
         for (index, title) in PreferencesToolbar.titles.enumerated() {
-            control.selectedSegment = index
-            if let action = control.action { NSApp.sendAction(action, to: control.target, from: control) }
+            settingsToolbar.select(index)
             try await Task.sleep(for: .milliseconds(200))
             let path = (output as NSString).deletingPathExtension + "-\(index).png"
             try captureSettingsWindow(window, to: path)
             let headerHeight = window.frame.height - window.contentLayoutRect.height
-            let segmentFrame: CGRect? = control.convert(control.bounds, to: nil)
-            let closeFrame = window.standardWindowButton(.closeButton).map { $0.convert($0.bounds, to: nil) }
-            let alignment = segmentFrame.flatMap { segment in closeFrame.map { abs(segment.midY - $0.midY) } }
             func scrollCount(_ view: NSView) -> Int { (view is NSScrollView ? 1 : 0) + view.subviews.reduce(0) { $0 + scrollCount($1) } }
-            checks.append(["pane": title, "scrollViews": window.contentView.map(scrollCount) ?? -1, "selectionMatches": settingsNavigation.selected == index,
-                           "headerHeight": headerHeight, "trafficLightAlignment": alignment ?? -1,
-                           "compact": headerHeight <= 50, "aligned": alignment.map { $0 <= 4 } ?? false,
-                           "nativeLiquidGlass": { if #available(macOS 26.0, *) { return window.toolbar?.items.contains { $0.view is NSGlassEffectView } ?? false }; return false }(),
+            checks.append(["pane": title, "scrollViews": window.contentView.map(scrollCount) ?? -1, "selectionMatches": settingsNavigation.selected == index && settingsToolbar.selectedIndex == index,
+                           "headerHeight": headerHeight,
                            "image": path])
         }
         let passed = checks.allSatisfy { $0["selectionMatches"] as? Bool == true
-            && $0["compact"] as? Bool == true && $0["aligned"] as? Bool == true && $0["scrollViews"] as? Int == 0 }
+            && $0["scrollViews"] as? Int == 0 }
         let report: [String: Any] = ["passed": passed, "checks": checks]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: URL(fileURLWithPath: (output as NSString).deletingPathExtension + ".json"))
