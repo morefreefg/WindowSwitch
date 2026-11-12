@@ -219,7 +219,7 @@ struct PreferencesView: View {
                     Stepper("", value: $preferences.backgroundPreloadInterval, in: 1...3600, step: 1).labelsHidden()
                     Text("seconds"); Spacer()
                 }.padding(.leading, 18).disabled(!preferences.backgroundPreloadEnabled)
-                Toggle("Also refresh low-resolution thumbnails", isOn: $preferences.backgroundPreloadThumbnails)
+                Toggle("Also refresh previews", isOn: $preferences.backgroundPreloadThumbnails)
                     .padding(.leading, 18).disabled(!preferences.backgroundPreloadEnabled)
                 Text("Uses idle time at the lowest background priority, one preview per cycle. Slows or pauses automatically when the system is busy.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -229,7 +229,7 @@ struct PreferencesView: View {
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
             Divider()
-            Text("Previews are static and cached. High quality is loaded when the list opens; background previews stay small and low priority.")
+            Text("Previews are static and cached. The open list shows cached previews as they are and only loads missing ones; background refresh uses the selected quality at low priority.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }.toggleStyle(.checkbox)

@@ -51,6 +51,7 @@ import WindowSwitchCore
     private var quickDisplayBounds: [CGRect] = []
     private var quickFocusWork: Task<Void, Never>?
     private var previewStamps: [UInt32: ThumbnailStamp] = [:]
+    private var previewDates: [UInt32: Date] = [:]
     private(set) var lastQuickEvidence: [String: String] = [:]
     @ObservationIgnored private var preloadWork: Task<Void, Never>?
     @ObservationIgnored private var preloadConfiguration: BackgroundPreloadConfiguration?
@@ -76,9 +77,11 @@ import WindowSwitchCore
         ThumbnailRequest(contentSize: thumbnailContentSize, backingScale: panel?.backingScaleFactor ?? preferredScreen()?.backingScaleFactor ?? 1,
                          quality: preferences.previewQuality)
     }
+    /// The open switcher shows previews exactly as cached. It only fills a window that has no
+    /// preview at all; existing previews are refreshed in the background while the panel is hidden.
     private func needsThumbnail(_ item: WindowItem, request: ThumbnailRequest) -> Bool {
         guard let id = item.windowID else { return false }
-        return thumbnails[id] == nil || previewStamps[id]?.satisfies(windowSize: item.frame.size, request: request) != true
+        return thumbnails[id] == nil
     }
     private func gridCapacity(_ items: [WindowItem]) -> [WindowItem] { Array(items.prefix(switcherLayout.capacity)) }
     private func listItems(_ windows: [WindowItem]) -> [WindowItem] {
@@ -365,6 +368,7 @@ import WindowSwitchCore
         if thumbnails.count > 100 {
             thumbnails = thumbnails.filter { liveIDs.contains($0.key) }
             previewStamps = previewStamps.filter { liveIDs.contains($0.key) }
+            previewDates = previewDates.filter { liveIDs.contains($0.key) }
         }
         let request = thumbnailRequest
         // One capture at a time, at most 60 cached previews; no unbounded task fan-out.
@@ -379,11 +383,10 @@ import WindowSwitchCore
                 guard let id = item.windowID, seen.insert(id).inserted else { continue }
                 guard seen.count <= 60 else { break }
                 guard needsThumbnail(item, request: request) else { continue }
-                if let stamp = previewStamps[id], stamp.windowSize != item.frame.size { await service.invalidateThumbnail(windowID: id) }
                 if let image = await service.thumbnail(windowID: id, maxPixelSize: request.pixelSize, interpolationQuality: request.quality) {
                     guard !Task.isCancelled, session == token, active else { return }
                     thumbnails[id] = NSImage(cgImage: image, size: .zero)
-                    previewStamps[id] = ThumbnailStamp(windowSize: item.frame.size, request: request)
+                    previewStamps[id] = ThumbnailStamp(windowSize: item.frame.size, request: request); previewDates[id] = Date()
                     do { try await Task.sleep(for: .milliseconds(32)) } catch { return }
                 }
             }
@@ -427,10 +430,10 @@ import WindowSwitchCore
               !Task.isCancelled, active, session == token else { return }
         if thumbnails.count >= 60, let victim = thumbnails.keys.first(where: { $0 != displayedSelection.selected?.windowID }) {
             thumbnails[victim] = nil
-            previewStamps[victim] = nil
+            previewStamps[victim] = nil; previewDates[victim] = nil
         }
         thumbnails[id] = NSImage(cgImage: image, size: .zero)
-        previewStamps[id] = ThumbnailStamp(windowSize: item.frame.size, request: request)
+        previewStamps[id] = ThumbnailStamp(windowSize: item.frame.size, request: request); previewDates[id] = Date()
     }
     func hover(_ id: String) {
         let point = NSEvent.mouseLocation
@@ -559,7 +562,7 @@ import WindowSwitchCore
                     if accepted { break }
                     guard await service.isWindowMissing(target) else { break }
                     if let id = target.windowID {
-                        thumbnails[id] = nil; previewStamps[id] = nil; preloadedThumbnails[id] = nil
+                        thumbnails[id] = nil; previewStamps[id] = nil; previewDates[id] = nil; preloadedThumbnails[id] = nil
                         preloadedWindows.removeAll { $0.windowID == id }
                     }
                     if Date().timeIntervalSince(began) > 0.15 { break }
@@ -816,16 +819,17 @@ import WindowSwitchCore
     private func applyPreloadedThumbnails(to windows: [WindowItem]) {
         guard preferences.backgroundPreloadEnabled, preferences.backgroundPreloadThumbnails else { return }
         for item in windows {
-            guard let id = item.windowID, let cached = preloadedThumbnails[id], cached.stamp.windowSize == item.frame.size else { continue }
-            // A background placeholder must never downgrade a finished preview.
-            if thumbnails[id] != nil, previewStamps[id]?.satisfies(windowSize: item.frame.size, request: thumbnailRequest) == true { continue }
+            guard let id = item.windowID, let cached = preloadedThumbnails[id] else { continue }
+            // Runs before the panel is visible: a newer background capture replaces the cached one.
+            if let current = previewStamps[id], current.request.quality > cached.stamp.request.quality { continue }
+            if let date = previewDates[id], date >= cached.updated { continue }
             if thumbnails[id] !== cached.image { thumbnails[id] = cached.image }
-            previewStamps[id] = cached.stamp
+            previewStamps[id] = cached.stamp; previewDates[id] = cached.updated
         }
     }
 
     private func clearClosedPreviews(_ ids: Set<UInt32>) {
-        for id in ids { thumbnails[id] = nil; previewStamps[id] = nil; preloadedThumbnails[id] = nil }
+        for id in ids { thumbnails[id] = nil; previewStamps[id] = nil; previewDates[id] = nil; preloadedThumbnails[id] = nil }
         preloadedWindows.removeAll { $0.windowID.map(ids.contains) == true }
     }
 
