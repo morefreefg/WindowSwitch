@@ -256,7 +256,7 @@ private func describe(_ windows: [WindowItem]) -> String {
     private static func waitForTabRelease(timeout: Double = 0.25) async {
         let deadline = CACurrentMediaTime() + timeout
         while CGEventSource.keyState(.hidSystemState, key: 48), CACurrentMediaTime() < deadline {
-            try? await Task.sleep(for: .milliseconds(4))
+            try? await Task.sleep(for: .milliseconds(1))
         }
     }
 
@@ -622,11 +622,15 @@ private func describe(_ windows: [WindowItem]) -> String {
             quickFocusWork = Task { [weak self] in
                 await preceding?.value
                 guard let self else { return }
-                await Self.waitForTabRelease()
                 let began = Date()
-                let focused = await service.frontmostWindowID()
+                // Read focus and the cached inventory while Tab is still held; activation
+                // itself has to wait for the Tab key-up (see waitForTabRelease).
+                let service = service
+                let focusedRead = Task { await service.frontmostWindowID() }
+                let windowsRead = Task { await service.discover(query, cachedOnly: true) }
                 let focusedPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-                let windows = await service.discover(query, cachedOnly: true)
+                let focused = await focusedRead.value
+                let windows = await windowsRead.value
                 clearClosedPreviews(await service.knownClosedWindowIDs())
                 let candidatesOnScreen = QuickSwitchPolicy.candidates(windows, screen: screen, screens: screens)
                 let local = preferences.oneWindowPerApp ? WindowGrouping.onePerApplication(candidatesOnScreen) : candidatesOnScreen
@@ -644,6 +648,7 @@ private func describe(_ windows: [WindowItem]) -> String {
                     return
                 }
                 var target = firstTarget, accepted = false
+                await Self.waitForTabRelease()
                 for candidate in candidates.prefix(8) {
                     target = candidate
                     accepted = await service.perform(.focus, on: target)
