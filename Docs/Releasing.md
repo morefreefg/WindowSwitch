@@ -40,6 +40,10 @@ Packaging the styled DMG needs the `ds-store` package. Point `WINDOWSWITCH_PYTHO
 
 `WINDOWSWITCH_BUILD_ROOT` and `WINDOWSWITCH_DIST_DIR` override temporary build and package output paths. `WINDOWSWITCH_SIGNING_IDENTITY` is opt-in; no local signing identity is selected automatically. `WINDOWSWITCH_APP_ID` can override the application bundle identifier for a separate local build. Keep a stable identifier and certificate for an existing installation to preserve its permission identity. The installer refuses to overwrite an app with a different bundle identifier.
 
+## Testing local builds with real permissions
+
+`Scripts/dev-install.sh` builds the checkout, signs it with the same "WindowSwitch Release Signing" certificate, and replaces the installed app. Because the designated requirement matches the released app, Accessibility and Screen Recording stay granted, so changes can be exercised with real hotkeys before a release. It reads the keychain holding the certificate from `WINDOWSWITCH_SIGNING_KEYCHAIN` and that keychain's password file from `WINDOWSWITCH_SIGNING_KEYCHAIN_PASSWORD`; it refuses to install an unsigned or ad-hoc build. Switcher diagnostics are written to the unified log (`log show --predicate 'subsystem == "io.github.morefreefg.WindowSwitch"'`).
+
 ## GitHub-only update publishing
 
 Sparkle 2.10.1 uses `https://morefreefg.github.io/WindowSwitch/appcast.xml`. The repository Pages source is GitHub Actions. `Update feed` deploys static XML; no application server is needed.

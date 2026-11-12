@@ -229,6 +229,7 @@ private func describe(_ windows: [WindowItem]) -> String {
             if preferences.nativeAppEnhancement && preferences.applicationModifier == .command { return false }
             requested = .applications; modifier = preferences.applicationModifier
         } else { return false }
+        switchLog.debug("hotkey accepted mode=\(String(describing: requested), privacy: .public)")
         if let requested { begin(mode: requested, modifier: modifier.flag, reverse: reverse) }
         suppressedKeys.insert(key)
         return true
@@ -307,9 +308,11 @@ private func describe(_ windows: [WindowItem]) -> String {
     }
 
     private func discoverForList(query: WindowQuery, screen: NSScreen?, token: UUID) {
+        switchLog.debug("discover started after=\(Int(Date().timeIntervalSince(self.sessionBegan) * 1000), privacy: .public)ms mode=\(String(describing: self.mode), privacy: .public)")
         work = Task { [weak self] in
             guard let self else { return }
             var windows = await service.discover(query)
+            switchLog.debug("discover returned after=\(Int(Date().timeIntervalSince(self.sessionBegan) * 1000), privacy: .public)ms count=\(windows.count, privacy: .public) current=\(self.session == token, privacy: .public)")
             clearClosedPreviews(await service.knownClosedWindowIDs())
             guard !Task.isCancelled, session == token, active else { return }
             if windows.isEmpty, mode == .currentApplication, let pid = query.currentPID,
@@ -341,19 +344,26 @@ private func describe(_ windows: [WindowItem]) -> String {
             guard let self else { return }
             var revision = (await service.discoveryStatus()).revision
             var incomplete = !(await service.discoveryStatus()).metadataComplete
+            var visible = service.visibleWindowSignature()
             var ticks = 0
             while !Task.isCancelled, session == token, active {
                 do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
                 guard !Task.isCancelled, session == token, active else { return }
                 ticks += 1
                 let status = await service.discoveryStatus()
-                guard status.revision != revision || (incomplete && ticks % 5 == 0) else { continue }
-                let windows = applicationWindowsOnly ? gridCapacity(await service.discover(query)) : listItems(await service.discover(query))
+                // A window appearing or disappearing on screen refreshes the list right away.
+                let nowVisible = service.visibleWindowSignature()
+                let visibleChanged = nowVisible != visible
+                visible = nowVisible
+                guard visibleChanged || status.revision != revision || (incomplete && ticks % 5 == 0) else { continue }
+                let latest = applicationWindowsOnly ? gridCapacity(await service.discover(query)) : listItems(await service.discover(query))
                 clearClosedPreviews(await service.knownClosedWindowIDs())
                 guard !Task.isCancelled, session == token, active else { return }
                 revision = (await service.discoveryStatus()).revision
                 incomplete = !(await service.discoveryStatus()).metadataComplete
                 let old = applicationWindowsOnly ? applicationWindows : selection
+                // The panel is open: never move what is already shown.
+                let windows = StableListOrder.merge(shown: old.items, latest: latest)
                 guard old.items != windows else { continue }
                 let oldIDs = Set(old.items.map(\.id))
                 let added = windows.filter { !oldIDs.contains($0.id) }
@@ -701,6 +711,9 @@ private func describe(_ windows: [WindowItem]) -> String {
     }
 
     private func showPanel(screen: NSScreen?) {
+        if panel?.isVisible != true {
+            switchLog.notice("panel shown after=\(Int(Date().timeIntervalSince(self.sessionBegan) * 1000), privacy: .public)ms loading=\(self.loading, privacy: .public) items=[\(describe(self.displayedWindows), privacy: .public)]")
+        }
         dismissalWork?.cancel()
         prepareInterface()
         let wasVisible = panel?.isVisible == true

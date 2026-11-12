@@ -79,6 +79,7 @@ actor WindowService {
     private var workspaceCache: [ApplicationSnapshot] = []
     private var workspaceCacheUpdated = Date.distantPast
     private var workspaceNeedsRefresh = true
+    private var nonRegularWindowOwners: Set<Int32> = []
     private var workspaceRevision: UInt64 = 0
     private var workspaceRefresh: Task<[ApplicationSnapshot], Never>?
     private var workspaceRefreshToken = UUID()
@@ -157,6 +158,11 @@ actor WindowService {
         if recency.record(pid: pid, windowID: windowID) { inventoryPublishRevision &+= 1 }
     }
 
+    /// Cheap check for the open switcher: the set of visible normal windows on screen.
+    nonisolated func visibleWindowSignature() -> [UInt32] {
+        Self.compositorWindows().filter { $0.onScreen && $0.layer == 0 && $0.frame.width >= 40 && $0.frame.height >= 30 }
+            .map(\.id).sorted()
+    }
     func discoveryEvidenceSummary() -> String {
         let e = lastDiscoveryEvidence
         func value(_ key: String) -> String { e[key].map { String(describing: $0) } ?? "?" }
@@ -389,12 +395,28 @@ actor WindowService {
     func discover(_ query: WindowQuery, cachedOnly: Bool = false) async -> [WindowItem] {
         let began = Date()
         if !cachedOnly, let currentPID = query.currentPID { await recordForegroundWindow(pid: currentPID) }
-        let applications = await cachedWorkspaceSnapshot(currentPID: query.currentPID, ownPID: query.ownPID)
+        var applications = await cachedWorkspaceSnapshot(currentPID: query.currentPID, ownPID: query.ownPID)
         let workspaceMS = Date().timeIntervalSince(began) * 1000
         guard !Task.isCancelled else { return [] }
         let cgBegan = Date()
         let compositor = Self.compositorWindows()
         let cgMS = Date().timeIntervalSince(cgBegan) * 1000
+        // A window is already on screen for an app the cached app list doesn't know yet
+        // (it just launched): refresh the list now instead of opening without that window
+        // and adding it a second later. Owners that stay unknown (agents) aren't retried.
+        if !cachedOnly {
+            let known = Set(applications.map(\.pid))
+            let unknownOwners = Set(compositor.filter { live in
+                live.onScreen && live.layer == 0 && live.frame.width >= 40 && live.frame.height >= 30
+                    && live.pid != query.ownPID && !known.contains(live.pid) && !nonRegularWindowOwners.contains(live.pid)
+            }.map(\.pid))
+            if !unknownOwners.isEmpty {
+                applications = await refreshWorkspaceSnapshot()
+                let refreshed = Set(applications.map(\.pid))
+                nonRegularWindowOwners.formUnion(unknownOwners.subtracting(refreshed))
+                if nonRegularWindowOwners.count > 256 { nonRegularWindowOwners.removeAll() }
+            }
+        }
         let candidates = applications.filter { app in
             app.pid != query.ownPID && !query.excludedBundleIDs.contains(app.bundleID)
                 && (query.allowedPIDs?.contains(app.pid) ?? true)
@@ -429,17 +451,20 @@ actor WindowService {
             if trusted {
                 for cached in (inventory[app.pid] ?? [:]).values {
                     if cached.windowID.map({ closedWindowIDs[$0] == app.pid }) == true { continue }
-                    if !query.includeMinimized && cached.minimized { continue }
                     if !query.includePalettes && [kAXFloatingWindowSubrole, kAXSystemFloatingWindowSubrole].contains(cached.subrole) { continue }
                     let live = cached.windowID.flatMap { byID[$0] }
                     let frame = live?.frame ?? cached.frame
                     let onScreen = live?.onScreen ?? false
+                    // A composited onscreen window is not minimized, even if the cached AX state
+                    // still says so (it was just restored and the rescan hasn't run yet).
+                    let minimized = cached.minimized && !onScreen
+                    if !query.includeMinimized && minimized { continue }
                     guard query.allSpaces || onScreen,
                           query.allScreens || query.screenBounds.map({ $0.intersects(frame) }) != false else { continue }
                     let item = WindowItem(id: cached.id, windowID: cached.windowID, pid: app.pid,
                         appName: app.name, bundleID: app.bundleID,
                         title: live.flatMap { $0.title.isEmpty ? nil : $0.title } ?? cached.title,
-                        frame: frame, isMinimized: cached.minimized, isHidden: app.hidden,
+                        frame: frame, isMinimized: minimized, isHidden: app.hidden,
                         isOnScreen: onScreen, isFullscreen: cached.fullscreen)
                     if !WindowRule.excludes(item, rules: query.excludedWindowRules) { rows.append(item) }
                 }

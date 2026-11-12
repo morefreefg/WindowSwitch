@@ -1,7 +1,7 @@
 # Architecture and validation
 
 - `WindowService` owns window metadata, Accessibility handles, window lifecycle notifications, and bounded screenshot caches. UI code receives value snapshots.
-- `SwitchController` owns a switching session, uses shared per-window recency, filters before optional app grouping, and fills static previews after the panel becomes visible.
+- `SwitchController` owns a switching session, uses shared per-window recency, filters before optional app grouping, and fills static previews after the panel becomes visible. While the list is open it watches the on-screen window set every 200 ms; windows already shown keep their places, new ones are appended, and recency reordering waits for the next open.
 - High preview quality scales the visible thumbnail box by the display backing scale. Low previews cap the longest edge at 200 pixels. Idle-time prefetching captures at most one image per cycle at the displayed size and quality while the panel is hidden; newer prefetched images are applied before the panel appears. An open panel shows cached previews unchanged and only fills windows that have none (cross-faded from empty).
 - Background metadata maintenance is event-driven, with a slow fallback sweep. Preloading is user-configurable and backs off under load, heat, low-power mode, or user activity.
 - `DockFocusController` uses a dedicated event-tap thread. A single click owns the restore, exact-window activation, and readback sequence. Other displays' visible windows are protected when hidden/minimized siblings are restored. Drag and long-press gestures are passed through.

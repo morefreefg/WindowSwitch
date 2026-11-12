@@ -1,4 +1,7 @@
 import AppKit
+import os
+
+private let hotkeyLog = Logger(subsystem: "io.github.morefreefg.WindowSwitch", category: "hotkeys")
 
 final class HotkeyMonitor {
     private var tap: CFMachPort?
@@ -19,6 +22,7 @@ final class HotkeyMonitor {
                 let consumed = MainActor.assumeIsolated {
                     let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(info).takeUnretainedValue()
                     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                        hotkeyLog.error("event tap disabled by \(type == .tapDisabledByTimeout ? "timeout" : "user input", privacy: .public); re-enabling")
                         monitor.onInterruption?()
                         if let tap = monitor.tap { CGEvent.tapEnable(tap: tap, enable: true) }
                         return false
