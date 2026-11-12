@@ -310,6 +310,7 @@ import WindowSwitchCore
                 guard !Task.isCancelled, session == token, active else { return }
             }
             windows = listItems(windows)
+            dropPreviewsBelowSettings(windows)
             applyPreloadedThumbnails(to: windows)
             spaceNumbers = SpaceService.badges(windowIDs: windows.filter { !$0.isOnScreen }.compactMap(\.windowID))
             selection.start(windows, advance: false)
@@ -812,10 +813,24 @@ import WindowSwitchCore
             preloadedThumbnails[oldest] = nil
         }
     }
+    /// Runs before the panel is visible. A preview captured under an older quality, size or
+    /// display-scale setting is dropped so it is captured fresh (blank to image) rather than
+    /// staying low-resolution forever or being swapped while the panel is shown.
+    private func dropPreviewsBelowSettings(_ windows: [WindowItem]) {
+        guard panel?.isVisible != true else { return }
+        let request = thumbnailRequest
+        for item in windows {
+            guard let id = item.windowID, thumbnails[id] != nil else { continue }
+            if previewStamps[id]?.request.satisfies(request) != true {
+                thumbnails[id] = nil; previewStamps[id] = nil; previewDates[id] = nil
+            }
+        }
+    }
     private func applyPreloadedThumbnails(to windows: [WindowItem]) {
         guard preferences.backgroundPreloadEnabled, preferences.backgroundPreloadThumbnails else { return }
         for item in windows {
-            guard let id = item.windowID, let cached = preloadedThumbnails[id] else { continue }
+            guard let id = item.windowID, let cached = preloadedThumbnails[id],
+                  cached.stamp.request.satisfies(thumbnailRequest) else { continue }
             // Runs before the panel is visible: a newer background capture replaces the cached one.
             if let current = previewStamps[id], current.request.quality > cached.stamp.request.quality { continue }
             if let date = previewDates[id], date >= cached.updated { continue }

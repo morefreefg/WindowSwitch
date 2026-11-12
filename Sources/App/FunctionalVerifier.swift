@@ -928,7 +928,11 @@ private final class FixtureVerificationRun {
         let afterOpen = await controller.service.snapshotCaptureCount()
         record("background-cache-used-on-open", visible && fromMemory && afterOpen == afterPause ? "passed" : "failed",
                evidence: ["imagesAlreadyPresent": "\(fromMemory)", "newCaptures": "\(afterOpen - afterPause)"])
-        record("background-cache-does-not-downgrade-high-quality", windowIDs.allSatisfy { controller.thumbnails[$0] === foregroundImages[$0] } ? "passed" : "failed")
+        // Newer background captures may replace a foreground preview before the panel opens,
+        // but never with fewer pixels.
+        func width(_ image: NSImage?) -> Int { image?.cgImage(forProposedRect: nil, context: nil, hints: nil)?.width ?? 0 }
+        record("background-cache-does-not-downgrade-high-quality",
+               windowIDs.allSatisfy { width(controller.thumbnails[$0]) >= width(foregroundImages[$0]) && width(foregroundImages[$0]) > 0 } ? "passed" : "failed")
         controller.cancel()
         controller.preferences.backgroundPreloadEnabled = false
         controller.refreshBackgroundPreloading(permitted: true)
