@@ -250,6 +250,16 @@ private func describe(_ windows: [WindowItem]) -> String {
         return true
     }
 
+    /// macOS loses the Tab key-up when the frontmost app changes while Tab is still held
+    /// (the native ⌘Tab switcher shows the same), then treats the next Tab press as a repeat
+    /// and drops it: every other quick tap went missing. Activate only after Tab is up.
+    private static func waitForTabRelease(timeout: Double = 0.25) async {
+        let deadline = CACurrentMediaTime() + timeout
+        while CGEventSource.keyState(.hidSystemState, key: 48), CACurrentMediaTime() < deadline {
+            try? await Task.sleep(for: .milliseconds(4))
+        }
+    }
+
     private func trackWindowModifier(_ flags: CGEventFlags) {
         let flag = preferences.windowModifier.flag
         let held = flags.intersection([.maskCommand, .maskAlternate, .maskControl]) == flag
@@ -612,6 +622,7 @@ private func describe(_ windows: [WindowItem]) -> String {
             quickFocusWork = Task { [weak self] in
                 await preceding?.value
                 guard let self else { return }
+                await Self.waitForTabRelease()
                 let began = Date()
                 let focused = await service.frontmostWindowID()
                 let focusedPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
@@ -664,6 +675,7 @@ private func describe(_ windows: [WindowItem]) -> String {
         quickFocusWork = Task { [weak self] in
             await preceding?.value
             guard let self else { return }
+            await Self.waitForTabRelease()
             if wasNative { try? await Task.sleep(for: .milliseconds(50)) }
             let began = Date()
             let accepted = await service.perform(.focus, on: target)
