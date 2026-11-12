@@ -29,6 +29,16 @@ public nonisolated enum QuickSwitchPolicy {
         return Array(local.dropFirst())
     }
 
+    /// When the pointer display offers nothing to switch to, a quick tap goes back to the
+    /// most recent other visible window on any display (recency order is preserved).
+    public static func fallbackTargets(_ windows: [WindowItem], focusedWindowID: UInt32?, focusedPID: Int32?) -> [WindowItem] {
+        windows.filter { item in
+            guard item.windowID != nil, item.isOnScreen, !item.isMinimized, !item.isHidden else { return false }
+            if let focusedWindowID { return item.windowID != focusedWindowID }
+            return item.pid != focusedPID
+        }
+    }
+
     public static func target(_ windows: [WindowItem], screen: CGRect, screens: [CGRect]) -> WindowItem? {
         let local = candidates(windows, screen: screen, screens: screens)
         return local.count >= 2 ? local[1] : nil

@@ -45,6 +45,16 @@ import Testing
         #expect(QuickSwitchPolicy.orderedTargets([a], focusedWindowID: 1, focusedPID: 1).map(\.id) == [a.id])
         #expect(QuickSwitchPolicy.orderedTargets([a], focusedWindowID: 2, focusedPID: 2).isEmpty)
     }
+    @Test func emptyPointerDisplayFallsBackToMostRecentVisibleWindowAnywhere() {
+        let current = item(1, frame: left), previous = item(2, frame: right), older = item(3, frame: right)
+        let minimized = item(4, frame: right, minimized: true)
+        // Pointer display (left) holds only the focused window: nothing local to switch to.
+        #expect(QuickSwitchPolicy.orderedTargets([current], focusedWindowID: 1, focusedPID: 1).isEmpty)
+        #expect(QuickSwitchPolicy.fallbackTargets([current, minimized, previous, older], focusedWindowID: 1, focusedPID: 1)
+            .map(\.id) == [previous.id, older.id])
+        // Unknown focused window: skip the frontmost app's windows.
+        #expect(QuickSwitchPolicy.fallbackTargets([current, previous], focusedWindowID: nil, focusedPID: 1).map(\.id) == [previous.id])
+    }
     @Test func successfulPairTogglesEvenWhenCompositorOrderDoesNotChange() {
         let a = item(1, frame: left), b = item(2, frame: left), c = item(3, frame: left)
         let staleOrder = [a, b, c]

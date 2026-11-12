@@ -274,7 +274,9 @@ private func describe(_ windows: [WindowItem]) -> String {
             quickGesture = true
             let mouseScreen = pointerScreen ?? NSScreen.screens.first { NSMouseInRect(mouseAtOpen, $0.frame, false) } ?? NSScreen.main
             var local = listQuery(screen: mouseScreen)
-            local.allSpaces = false; local.allScreens = false; local.includeMinimized = false; local.includeHidden = false
+            // All displays are read so a tap can fall back to another display; the pointer
+            // display still comes first (QuickSwitchPolicy.candidates filters by screen).
+            local.allSpaces = false; local.allScreens = true; local.includeMinimized = false; local.includeHidden = false
             quickQuery = local
             quickScreenBounds = local.screenBounds ?? .zero
             let top = NSScreen.screens.first?.frame.maxY ?? 0
@@ -575,8 +577,17 @@ private func describe(_ windows: [WindowItem]) -> String {
                 let local = preferences.oneWindowPerApp ? WindowGrouping.onePerApplication(candidatesOnScreen) : candidatesOnScreen
                 lastQuickEvidence = ["candidateIDs": local.compactMap(\.windowID).map(String.init).joined(separator: ",")]
                 lastQuickEvidence["observedFocusedID"] = focused.map(String.init) ?? "none"
-                let candidates = QuickSwitchPolicy.orderedTargets(local, focusedWindowID: focused, focusedPID: focusedPID)
-                guard let firstTarget = candidates.first else { return }
+                var candidates = QuickSwitchPolicy.orderedTargets(local, focusedWindowID: focused, focusedPID: focusedPID)
+                var scope = "pointer-display"
+                if candidates.isEmpty {
+                    let visible = preferences.oneWindowPerApp ? WindowGrouping.onePerApplication(windows) : windows
+                    candidates = QuickSwitchPolicy.fallbackTargets(visible, focusedWindowID: focused, focusedPID: focusedPID)
+                    scope = "any-display"
+                }
+                guard let firstTarget = candidates.first else {
+                    switchLog.notice("quick tap: nothing to switch to focused=\(focused.map(String.init) ?? "none", privacy: .public) pointerDisplay=[\(describe(local), privacy: .public)]")
+                    return
+                }
                 var target = firstTarget, accepted = false
                 for candidate in candidates.prefix(8) {
                     target = candidate
@@ -591,6 +602,7 @@ private func describe(_ windows: [WindowItem]) -> String {
                 }
                 lastQuickEvidence["targetID"] = target.windowID.map(String.init)
                 lastQuickEvidence["focusAccepted"] = "\(accepted)"
+                switchLog.notice("quick tap: \(scope, privacy: .public) focused=\(focused.map(String.init) ?? "none", privacy: .public) target=\(describe([target]), privacy: .public) accepted=\(accepted, privacy: .public) ms=\(Int(Date().timeIntervalSince(began) * 1000), privacy: .public)")
                 lastQuickEvidence["queryAndActivationMS"] = "\(Date().timeIntervalSince(began) * 1000)"
                 if !accepted { message = "当前无法切换到该窗口" }
             }
