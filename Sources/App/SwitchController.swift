@@ -725,7 +725,10 @@ import WindowSwitchCore
         var query = preferences.query(mode: .windows, currentPID: nil, screen: preferredScreen())
         query.allowedPIDs = windowScope
         let interval = min(max(preferences.backgroundPreloadInterval.isFinite ? preferences.backgroundPreloadInterval : 30, 1), 3600)
-        let request = ThumbnailRequest(contentSize: thumbnailContentSize, backingScale: 1, quality: 2, background: true)
+        // Prefetch at the size the switcher will display, so a prefetched preview is final
+        // and the open panel does not visibly swap a blurry placeholder for a sharp capture.
+        let request = ThumbnailRequest(contentSize: thumbnailContentSize, backingScale: preferredScreen()?.backingScaleFactor ?? 1,
+                                       quality: preferences.previewQuality)
         let configuration = BackgroundPreloadConfiguration(enabled: permitted && preferences.backgroundPreloadEnabled,
             thumbnails: preferences.backgroundPreloadThumbnails && preferences.showPreviews, interval: interval,
             query: query, request: request)

@@ -119,6 +119,7 @@ final class WindowPreviewView: NSView {
     private var imageSize = CGSize.zero
     private var originalWindowSize = CGSize.zero
     private var imageIdentity: ObjectIdentifier?
+    private var renderedWindowID: String?
     private var iconKey = ""
     private var classic = false
 
@@ -201,8 +202,17 @@ final class WindowPreviewView: NSView {
         highlight.backgroundColor = selected && !classic ? (dark ? NSColor(calibratedWhite: 0.7, alpha: 0.3) : NSColor.black.withAlphaComponent(0.1)).cgColor : nil
         highlight.colors = classic && selected ? [NSColor.white.withAlphaComponent(0.2).cgColor, NSColor.white.withAlphaComponent(0.6).cgColor] : nil
         if imageIdentity != image.map(ObjectIdentifier.init) {
+            let sameWindow = renderedWindowID == item.id
             imageIdentity = image.map(ObjectIdentifier.init)
+            renderedWindowID = item.id
             if let image, let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                // A preview arriving or improving for the same window cross-fades instead of popping.
+                if sameWindow, window?.isVisible == true, window?.alphaValue ?? 0 > 0 {
+                    let fade = CATransition()
+                    fade.type = .fade; fade.duration = 0.18
+                    fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    screenshotImage.add(fade, forKey: "contents")
+                }
                 screenshotImage.contents = cgImage
                 imageSize = CGSize(width: cgImage.width, height: cgImage.height)
             } else { screenshotImage.contents = nil; imageSize = .zero }
