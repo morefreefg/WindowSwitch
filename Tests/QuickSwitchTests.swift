@@ -31,6 +31,20 @@ import Testing
         #expect(QuickSwitchPolicy.target([item(1, frame: left), item(2, frame: right)], screen: left,
                                         screens: [left, right]) == nil)
     }
+    @Test func focusOnAnotherDisplayTargetsPointerDisplaysMostRecentWindow() {
+        let a = item(2, frame: right), b = item(3, frame: right)
+        // Focused window 1 lives on the left display; pointer is on the right.
+        #expect(QuickSwitchPolicy.orderedTargets([a, b], focusedWindowID: 1, focusedPID: 1).map(\.id) == [a.id, b.id])
+        // Focus on the pointer display toggles to the other window.
+        #expect(QuickSwitchPolicy.orderedTargets([a, b], focusedWindowID: 2, focusedPID: 2).map(\.id) == [b.id])
+        #expect(QuickSwitchPolicy.orderedTargets([b, a], focusedWindowID: 2, focusedPID: 2).map(\.id) == [b.id])
+        // Unknown focus, or an unlisted window of the first app (a palette), keeps the runner-up.
+        #expect(QuickSwitchPolicy.orderedTargets([a, b], focusedWindowID: nil, focusedPID: nil).map(\.id) == [b.id])
+        #expect(QuickSwitchPolicy.orderedTargets([a, b], focusedWindowID: 99, focusedPID: 2).map(\.id) == [b.id])
+        // A lone window on the pointer display is reachable when focus is elsewhere.
+        #expect(QuickSwitchPolicy.orderedTargets([a], focusedWindowID: 1, focusedPID: 1).map(\.id) == [a.id])
+        #expect(QuickSwitchPolicy.orderedTargets([a], focusedWindowID: 2, focusedPID: 2).isEmpty)
+    }
     @Test func successfulPairTogglesEvenWhenCompositorOrderDoesNotChange() {
         let a = item(1, frame: left), b = item(2, frame: left), c = item(3, frame: left)
         let staleOrder = [a, b, c]

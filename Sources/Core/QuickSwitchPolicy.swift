@@ -16,6 +16,19 @@ public nonisolated enum QuickSwitchPolicy {
         }
     }
 
+    /// Activation order for a quick tap among the pointer display's `local` candidates.
+    /// - Focus on this display: every other window, most recent first.
+    /// - Focus on another display: this display's most recent window first, so one tap lands
+    ///   where the user is pointing instead of skipping to the runner-up.
+    /// - Focus unknown, or held by a non-listed window of `local[0]`'s app: the runner-up.
+    public static func orderedTargets(_ local: [WindowItem], focusedWindowID: UInt32?, focusedPID: Int32?) -> [WindowItem] {
+        if let focusedWindowID, local.contains(where: { $0.windowID == focusedWindowID }) {
+            return local.filter { $0.windowID != focusedWindowID }
+        }
+        if focusedWindowID != nil, let focusedPID, let first = local.first, first.pid != focusedPID { return local }
+        return Array(local.dropFirst())
+    }
+
     public static func target(_ windows: [WindowItem], screen: CGRect, screens: [CGRect]) -> WindowItem? {
         let local = candidates(windows, screen: screen, screens: screens)
         return local.count >= 2 ? local[1] : nil

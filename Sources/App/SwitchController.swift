@@ -542,19 +542,15 @@ import WindowSwitchCore
                 guard let self else { return }
                 let began = Date()
                 let focused = await service.frontmostWindowID()
+                let focusedPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
                 let windows = await service.discover(query, cachedOnly: true)
                 clearClosedPreviews(await service.knownClosedWindowIDs())
                 let candidatesOnScreen = QuickSwitchPolicy.candidates(windows, screen: screen, screens: screens)
                 let local = preferences.oneWindowPerApp ? WindowGrouping.onePerApplication(candidatesOnScreen) : candidatesOnScreen
                 lastQuickEvidence = ["candidateIDs": local.compactMap(\.windowID).map(String.init).joined(separator: ",")]
                 lastQuickEvidence["observedFocusedID"] = focused.map(String.init) ?? "none"
-                guard local.count > 1 else { return }
-                let firstTarget: WindowItem
-                if let focused, local.contains(where: { $0.windowID == focused }) {
-                    firstTarget = local.first(where: { $0.windowID != focused }) ?? local[1]
-                } else { firstTarget = local[1] }
-                let previous = local.first { $0.windowID == focused } ?? local.first
-                let candidates = [firstTarget] + local.filter { $0.id != firstTarget.id && $0.windowID != previous?.windowID }
+                let candidates = QuickSwitchPolicy.orderedTargets(local, focusedWindowID: focused, focusedPID: focusedPID)
+                guard let firstTarget = candidates.first else { return }
                 var target = firstTarget, accepted = false
                 for candidate in candidates.prefix(8) {
                     target = candidate
