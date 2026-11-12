@@ -4,6 +4,17 @@ The `Build` workflow runs on pull requests, pushes to main, tags, published rele
 
 The DMG contains WindowSwitch and an Applications link, and opens to a fixed drag-to-install window: the app on the left, the Applications link on the right, over a background picture. `Scripts/dmg-layout.py` writes that layout straight into `.DS_Store`, so packaging never drives Finder and works without a GUI session. Temporary staging files are removed after packaging. The default signature is ad-hoc; it contains no personal signing certificate and is not an Apple notarization. Ad-hoc signing has no Team ID, so `Scripts/sign.sh` adds `com.apple.security.cs.disable-library-validation` for those builds only — without it the hardened runtime refuses to load the app's own embedded frameworks and the app aborts at launch. Developer ID builds keep the stricter entitlement set. The x86_64 slice is compiled but requires Intel hardware for runtime testing.
 
+## Stable self-signed signing (default for releases)
+
+macOS privacy permissions (Accessibility, Screen Recording) are keyed to the app's designated requirement. An ad-hoc signature's requirement is its code hash, so every new build loses those permissions. Releases are therefore signed with a long-lived self-signed certificate, "WindowSwitch Release Signing", whose requirement is `identifier "io.github.morefreefg.WindowSwitch" and certificate leaf = H"…"`: permissions survive updates as long as the same certificate is used.
+
+| Secret | Value |
+| --- | --- |
+| `SELF_SIGNED_P12_BASE64` | Base64-encoded certificate and private key export |
+| `SELF_SIGNED_P12_PASSWORD` | Password protecting that export |
+
+The maintainer's password manager holds the backup. Never regenerate the certificate for an existing installation base: a new certificate costs every user one more permission grant. The certificate has no Team ID, so signing adds `disable-library-validation` (as ad-hoc does) and uses no Apple timestamp. Gatekeeper still treats the app as from an unidentified developer; only Developer ID signing and notarization change that. When Developer ID secrets are configured they take precedence. Release tags fail without either signing setup.
+
 ## Optional Developer ID signing and notarization
 
 Configure all of these repository Actions secrets:

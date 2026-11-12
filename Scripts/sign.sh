@@ -5,9 +5,11 @@ app_path="${1:?Usage: sign.sh /path/to/WindowSwitch.app}"
 signing_identity="${WINDOWSWITCH_SIGNING_IDENTITY:--}"
 signing_options=(--force --sign "$signing_identity" --options runtime)
 entitlements="$project_root/Sources/WindowSwitch.entitlements"
-if [[ "$signing_identity" == '-' ]]; then
+# 自签名证书：身份固定（升级后保留 TCC 授权），但同样没有 Team ID，也不能用 Apple 时间戳服务
+self_signed="${WINDOWSWITCH_SIGNING_SELF_SIGNED:-0}"
+if [[ "$signing_identity" == '-' || "$self_signed" == 1 ]]; then
   signing_options+=(--timestamp=none)
-  # adhoc 签名没有 Team ID，hardened runtime 的 library validation 会拒绝加载同样 adhoc 的内嵌 framework
+  # adhoc/自签名都没有 Team ID，hardened runtime 的 library validation 会拒绝加载内嵌 framework
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/windowswitch-sign.XXXXXX")
   trap 'rm -rf "$scratch"' EXIT
   entitlements="$scratch/WindowSwitch.entitlements"
