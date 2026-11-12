@@ -614,13 +614,19 @@ private func describe(_ windows: [WindowItem]) -> String {
         let openDefault = preferences.openDefaultWindow && target?.id.hasPrefix("app:") == true && target?.windowID == nil
         cancel()
         guard let target else { return }
-        let token = session
-        actionWork = Task {
+        // Like a quick tap, a submitted switch must survive the next gesture starting
+        // (fast users press again immediately); the next quick tap waits for it.
+        let preceding = quickFocusWork
+        quickFocusWork = Task { [weak self] in
+            await preceding?.value
+            guard let self else { return }
             if wasNative { try? await Task.sleep(for: .milliseconds(50)) }
-            guard !Task.isCancelled, session == token else { return }
-            if !(await service.perform(.focus, on: target)) {
+            let began = Date()
+            let accepted = await service.perform(.focus, on: target)
+            switchLog.notice("list commit: target=\(describe([target]), privacy: .public) accepted=\(accepted, privacy: .public) ms=\(Int(Date().timeIntervalSince(began) * 1000), privacy: .public)")
+            if !accepted {
                 message = "窗口已关闭或当前无法切换"
-            } else if openDefault, !Task.isCancelled, session == token {
+            } else if openDefault {
                 _ = await service.perform(.newWindow, on: target)
             }
         }

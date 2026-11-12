@@ -69,7 +69,7 @@
 	<key>previewQuality</key>
 	<integer>4</integer>
 	<key>quickHoldDelay</key>
-	<real>200.0</real>
+	<real>500.0</real>
 	<key>quickSwitchOnMouseScreen</key>
 	<true/>
 	<key>reverseWithShift</key>
