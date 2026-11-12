@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let library = LibraryPanelController()
     private let nativeSwitcher = NativeAppSwitcherObserver()
     private let permissionGuide = PermissionGuideController()
+    private var setupResumeStep = 0
     private let updates = UpdateController()
     private var setupWindow: NSWindow?
     private var setupPrompted = false
@@ -136,6 +137,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                                  listFrame: nativeSwitcher.switcherFrame,
                                                  selectedAppFrame: nativeSwitcher.selectedAppFrame)
         }
+        let resume = PermissionGuideController.consumeRelaunchResume()
+        if resume == "setup" { setupResumeStep = 1 }
+        permissionGuide.resumeTarget = { [weak self] in
+            guard let self else { return nil }
+            if self.setupWindow?.isVisible == true { return "setup" }
+            return self.settingsWindow?.isVisible == true ? "settings:\(self.settingsNavigation.selected)" : nil
+        }
         makeMenu()
         controller.prepareInterface()
         refreshHooks()
@@ -143,7 +151,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             MainActor.assumeIsolated { self?.refreshHooks() }
         }
         // 首次启动必定走一遍向导：权限齐备不代表用户见过授权引导
-        if !permissionsReady || !UserDefaults.standard.bool(forKey: "hasCompletedSetup") { showSetup() }
+        if !permissionsReady || !UserDefaults.standard.bool(forKey: "hasCompletedSetup") || resume == "setup" { showSetup() }
+        else if let resume, resume.hasPrefix("settings:") {
+            // Back from "Quit & Reopen": show the same settings pane the permission was requested from.
+            if let pane = Int(resume.dropFirst("settings:".count)), PreferencesToolbar.titles.indices.contains(pane) {
+                settingsNavigation.selected = pane
+            }
+            showSettings()
+        }
         else if settingsOnly { showSettings() }
         UserDefaults.standard.set(true, forKey: "hasLaunched")
     }
@@ -304,12 +319,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if setupWindow == nil {
             let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 480, height: 340), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "WindowSwitch 设置向导"; window.isReleasedWhenClosed = false; window.delegate = self
+            let initialStep = setupResumeStep; setupResumeStep = 0
             window.contentView = NSHostingView(rootView: SetupWizard(preferences: preferences, guide: permissionGuide, finish: { [weak self] in
                 guard let self, self.permissionsReady else { return }
                 self.setupWindow?.close(); self.setupWindow = nil; self.permissionGuide.close()
                 UserDefaults.standard.set(true, forKey: "hasCompletedSetup")
                 self.settingsOnly = false; self.refreshHooks()
-            }))
+            }, initialStep: initialStep))
             window.center(); setupWindow = window
         }
         setupPrompted = true

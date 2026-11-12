@@ -7,7 +7,9 @@ struct SetupWizard: View {
     @Bindable var preferences: Preferences
     let guide: PermissionGuideController
     let finish: () -> Void
+    var initialStep = 0
     @State private var step = 0
+    @State private var appliedInitialStep = false
     @State private var accessibility = AXIsProcessTrusted()
     @State private var screenRecording = CGPreflightScreenCaptureAccess()
     private let poll = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -53,6 +55,7 @@ struct SetupWizard: View {
         }.padding(24).frame(width: 480, height: 340)
             .background(Color(nsColor: .windowBackgroundColor))
             .onReceive(poll) { _ in accessibility = AXIsProcessTrusted(); screenRecording = CGPreflightScreenCaptureAccess() }
+            .onAppear { if !appliedInitialStep { appliedInitialStep = true; step = initialStep } }
     }
     private func permission(_ title: String, detail: String, granted: Bool, action: @escaping () -> Void) -> some View {
         HStack(spacing: 12) {
