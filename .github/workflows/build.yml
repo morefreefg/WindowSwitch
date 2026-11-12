@@ -80,6 +80,11 @@ jobs:
         run: |
           version=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$WINDOWSWITCH_BUILD_ROOT/Build/Products/Release/WindowSwitch.app/Contents/Info.plist")
           [[ "$GITHUB_REF_NAME" == "v$version" ]]
+      - name: DMG layout tooling
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dmg-venv"
+          "$RUNNER_TEMP/dmg-venv/bin/pip" install --quiet ds-store mac_alias
+          echo "WINDOWSWITCH_PYTHON=$RUNNER_TEMP/dmg-venv/bin/python" >> "$GITHUB_ENV"
       - name: Package DMG and ZIP
         run: ./Scripts/package.sh
       - name: Sign update archive
@@ -92,7 +97,7 @@ jobs:
           : "${SPARKLE_PRIVATE_KEY:?Missing update signing secret}"
           ./Scripts/sparkle-tools.sh "$RUNNER_TEMP/sparkle"
           printf '%s' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle-key"
-          python3 Scripts/release-metadata.py dist/*.zip "$RUNNER_TEMP/sparkle/bin/sign_update" "$RUNNER_TEMP/sparkle-key"
+          python3 Scripts/release-metadata.py dist/*.dmg "$RUNNER_TEMP/sparkle/bin/sign_update" "$RUNNER_TEMP/sparkle-key"
       - name: Remove temporary update key
         if: always()
         run: rm -f "$RUNNER_TEMP/sparkle-key"
@@ -127,6 +132,8 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           (cd dist && sha256sum -c SHA256SUMS)
+          # 发布面只留安装包和 Sparkle 元数据；zip/manifest/校验和留在 CI 产物里
+          published=(dist/*.dmg dist/*.update.json)
           cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
           Universal build for Apple silicon and Intel, macOS 14 or later.
 
@@ -137,9 +144,9 @@ jobs:
           flags=()
           if [[ "${GITHUB_REF_NAME,,}" == *-rc* ]]; then flags+=(--prerelease); fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+            gh release upload "$GITHUB_REF_NAME" "${published[@]}" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "WindowSwitch $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md" "${flags[@]}"
+            gh release create "$GITHUB_REF_NAME" "${published[@]}" --verify-tag --title "WindowSwitch $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md" "${flags[@]}"
           fi
   publish-feed:
     if: startsWith(github.ref, 'refs/tags/')

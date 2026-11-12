@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Sign a release archive and write the public metadata used by the appcast."""
-import hashlib,json,os,pathlib,plistlib,re,subprocess,sys,zipfile
+import hashlib,json,os,pathlib,plistlib,re,subprocess,sys
 root=pathlib.Path(__file__).resolve().parent.parent
 archive=pathlib.Path(sys.argv[1]); tool=pathlib.Path(sys.argv[2]); key=pathlib.Path(sys.argv[3])
-with zipfile.ZipFile(archive) as package:
-    info=plistlib.loads(package.read('WindowSwitch.app/Contents/Info.plist'))
+def read_app_info(image):
+    attached=subprocess.check_output(['hdiutil','attach',str(image),'-nobrowse','-readonly','-noautoopen','-plist'])
+    mount=next(entity['mount-point'] for entity in plistlib.loads(attached)['system-entities'] if entity.get('mount-point'))
+    try: return plistlib.loads((pathlib.Path(mount)/'WindowSwitch.app/Contents/Info.plist').read_bytes())
+    finally: subprocess.run(['hdiutil','detach',mount,'-quiet'],check=False)
+info=read_app_info(archive)
 version=info['CFBundleShortVersionString']; tag=os.environ.get('GITHUB_REF_NAME','v'+version)
 assert tag == 'v'+version and re.fullmatch(r'v\d+\.\d+\.\d+(?:-rc[.-]\d+)?',tag,re.I)
 assert info['CFBundleIdentifier']=='io.github.morefreefg.WindowSwitch'
