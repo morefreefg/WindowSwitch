@@ -408,10 +408,11 @@ private actor DockFocusExecutor {
         scriptRunning = true
         defer { scriptRunning = false }
         guard !(await Self.currentInstances(plan.application)).isEmpty, !Task.isCancelled else { return false }
-        let before = Set(instances.flatMap { DockWindow.visible(pid: $0.pid).map(\.id) })
+        let existing = instances.flatMap { DockWindow.visible(pid: $0.pid) }
+        let before = Set(existing.map(\.id))
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script]
+        process.arguments = ["-e", Self.placing(script, for: plan, like: existing.first)]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return false }
@@ -448,6 +449,22 @@ private actor DockFocusExecutor {
             do { try await Task.sleep(for: .milliseconds(50)) } catch { return false }
         }
         return false
+    }
+    /// Chromium places a new window next to its last active one, often on another
+    /// display; moving it afterwards shows it sliding across. Passing bounds to
+    /// `make new window` creates it on the clicked display from the first frame.
+    private static let boundsAtCreation: Set<String> = [
+        "com.google.Chrome", "com.google.Chrome.canary", "com.microsoft.edgemac", "com.brave.Browser"]
+    private static func placing(_ script: String, for plan: DockPlan, like reference: DockWindow?) -> String {
+        guard boundsAtCreation.contains(plan.application.bundleID) else { return script }
+        let area = plan.visible
+        let size = reference?.frame.size ?? CGSize(width: area.width * 0.8, height: area.height * 0.8)
+        let width = min(size.width, area.width).rounded(.down)
+        let height = min(size.height, area.height).rounded(.down)
+        let left = (area.midX - width / 2).rounded(.down)
+        let top = (area.midY - height / 2).rounded(.down)
+        let bounds = [left, top, left + width, top + height].map { String(Int($0)) }.joined(separator: ", ")
+        return script + " with properties {bounds:{\(bounds)}}"
     }
     private func focusExactly(_ target: WindowItem, protecting stacks: [DockDisplayStack] = []) async -> Bool {
         guard let id = target.windowID else { return false }
