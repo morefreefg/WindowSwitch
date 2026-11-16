@@ -476,7 +476,7 @@ private final class FixtureVerificationRun {
         let suite = "WindowSwitch.Verification.\(session)"
         guard let defaults = UserDefaults(suiteName: suite) else { return }
         let rule = WindowRule(bundleID: bundleID, titlePattern: "WSFixture_(B|C)")
-        defaults.setVolatileDomain(["screenChoice": "main", "quickSwitchOnMouseScreen": true, "quickHoldDelay": 200.0, "allSpaces": true, "allScreens": true, "oneWindowPerApp": false,
+        defaults.setVolatileDomain(["screenChoice": "main", "windowModifier": "option", "quickSwitchOnMouseScreen": true, "quickHoldDelay": 200.0, "allSpaces": true, "allScreens": true, "oneWindowPerApp": false,
             "windowRules": (try? JSONEncoder().encode([rule])) ?? Data(), "hoverPreview": false], forName: UserDefaults.argumentDomain)
         let controller = SwitchController(preferences: Preferences(defaults: defaults), windowScope: fixturePIDs,
             backgroundResources: { BackgroundResourceSnapshot(idleSeconds: 30, loadPerCore: 0, thermalSeverity: 0, lowPowerMode: false) })
@@ -487,15 +487,32 @@ private final class FixtureVerificationRun {
         _ = await act(.focus, on: second, using: sentinelService)
         _ = await act(.focus, on: first)
         _ = await wait { self.focusedWindowID(pid: primaryPID) == firstID }
+        // Exercise the controller's actual key stream without posting events to
+        // the system or disturbing the user's keyboard and pointer.
+        func input(_ type: CGEventType, key: CGKeyCode = 48, flags: CGEventFlags) -> Bool {
+            guard let event = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: type == .keyDown) else { return false }
+            event.flags = flags
+            return controller.handle(type: type, event: event, pointerScreen: screen)
+        }
+        func pressTab() -> Bool {
+            _ = input(.flagsChanged, flags: .maskAlternate)
+            return input(.keyDown, flags: .maskAlternate)
+        }
         var passed = 0
         var latencies: [Double] = []
         for index in 0..<20 {
             guard fixturePIDs.allSatisfy({ isAllowed($0) }) else { break }
+            guard pressTab() else { break }
+            try? await Task.sleep(for: .milliseconds(15))
             let start = Date()
-            controller.begin(modifier: .maskAlternate, pointerScreen: screen)
-            guard let release = CGEvent(source: nil) else { break }
-            release.flags = []
-            _ = controller.handle(type: .flagsChanged, event: release)
+            if index.isMultiple(of: 2) {
+                _ = input(.keyUp, flags: .maskAlternate)
+                _ = input(.flagsChanged, flags: [])
+            } else {
+                _ = input(.flagsChanged, flags: [])
+                try? await Task.sleep(for: .milliseconds(3))
+                _ = input(.keyUp, flags: [])
+            }
             await controller.waitForQuickSwitch()
             let expectedPID = index % 2 == 0 ? secondPID : primaryPID
             let expectedID = index % 2 == 0 ? secondID : firstID
@@ -512,6 +529,37 @@ private final class FixtureVerificationRun {
                        "panelNeverShown": "\(!controller.panelIsVisible)", "maxTapMS": "\(latencies.max() ?? 0)",
                        "meanTapMS": "\(latencies.reduce(0, +) / Double(max(1, latencies.count)))"]
                 .merging(controller.lastQuickEvidence, uniquingKeysWith: { _, new in new }))
+        // Submit one tap, then start and hold the next before its task runs.
+        // The first activation must use its remembered key-up rather than wait
+        // for the second Tab. Complete both taps before continuing the fixtures.
+        _ = await act(.focus, on: first)
+        _ = await wait { self.focusedWindowID(pid: primaryPID) == firstID }
+        _ = await controller.service.frontmostWindowID()
+        let firstPress = pressTab()
+        _ = input(.keyUp, flags: .maskAlternate)
+        _ = input(.flagsChanged, flags: [])
+        let secondPress = pressTab()
+        await controller.waitForQuickSwitch()
+        let firstObserved = await wait { NSWorkspace.shared.frontmostApplication?.processIdentifier == secondPID
+            && self.focusedWindowID(pid: secondPID) == secondID }
+        let firstWaitMS = Double(controller.lastQuickEvidence["tabReleaseWaitMS"] ?? "") ?? .infinity
+        _ = input(.keyUp, flags: .maskAlternate)
+        _ = input(.flagsChanged, flags: [])
+        await controller.waitForQuickSwitch()
+        let secondObserved = await wait { NSWorkspace.shared.frontmostApplication?.processIdentifier == primaryPID
+            && self.focusedWindowID(pid: primaryPID) == firstID }
+        record("quick-tap-next-held-key-does-not-delay-submitted-tap", firstPress && secondPress && firstObserved && secondObserved && firstWaitMS < 10 ? "passed" : "failed",
+               evidence: ["firstObservedWhileNextTabHeld": "\(firstObserved)", "secondObserved": "\(secondObserved)",
+                          "firstTabReleaseWaitMS": "\(firstWaitMS)", "input": "controller keyDown/keyUp/flagsChanged; no global event injection"])
+        _ = pressTab()
+        _ = input(.keyDown, key: 53, flags: .maskAlternate)
+        _ = input(.keyUp, key: 53, flags: .maskAlternate)
+        _ = input(.keyUp, flags: .maskAlternate)
+        _ = input(.flagsChanged, flags: [])
+        try? await Task.sleep(for: .milliseconds(50))
+        let cancelPreservedFocus = NSWorkspace.shared.frontmostApplication?.processIdentifier == primaryPID
+            && self.focusedWindowID(pid: primaryPID) == firstID
+        record("quick-tap-cancelled-preparation-never-activates", cancelPreservedFocus && !controller.panelIsVisible ? "passed" : "failed")
         var gaps: [Double] = []
         let ticker = Task {
             var previous = Date()
@@ -558,13 +606,18 @@ private final class FixtureVerificationRun {
             backgroundResources: { BackgroundResourceSnapshot(idleSeconds: 30, loadPerCore: 0, thermalSeverity: 0, lowPowerMode: false) })
         controller.prepareInterface()
         let quality = controller.preferences.previewQuality, size = controller.preferences.thumbnailSize
-        defer { controller.cancel(); controller.preferences.previewQuality = quality; controller.preferences.thumbnailSize = size }
+        let fadeOut = controller.preferences.fadeOutDuration
+        defer {
+            controller.cancel(); controller.preferences.previewQuality = quality; controller.preferences.thumbnailSize = size
+            controller.preferences.fadeOutDuration = fadeOut
+        }
         func pixels() -> CGImage? { controller.thumbnails[windowID]?.cgImage(forProposedRect: nil, context: nil, hints: nil) }
         func save(_ image: CGImage, name: String) {
             let bitmap = NSBitmapImageRep(cgImage: image)
             try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/codex-windowswitch/quality-\(name).png"))
         }
         controller.preferences.thumbnailSize = 320
+        controller.preferences.fadeOutDuration = 300
         controller.preferences.previewQuality = 2
         controller.begin(modifier: .maskAlternate, pointerScreen: screen)
         _ = await wait { controller.panelIsVisible && !controller.loading }
@@ -572,6 +625,7 @@ private final class FixtureVerificationRun {
         let low = pixels()
         if let low { save(low, name: "low") }
         controller.cancel()
+        let reopenedDuringFade = controller.panelIsVisible
         controller.preferences.previewQuality = 4
         controller.begin(modifier: .maskAlternate, pointerScreen: screen)
         _ = await wait { controller.panelIsVisible && !controller.loading }
@@ -582,6 +636,8 @@ private final class FixtureVerificationRun {
         record("high-quality-upgrades-low-resolution-cache", lowReady && highReady && (high?.width ?? 0) > (low?.width ?? 0) ? "passed" : "failed",
             evidence: evidence.merging(["lowPixels": "\(low?.width ?? 0)x\(low?.height ?? 0)", "highPixels": "\(high?.width ?? 0)x\(high?.height ?? 0)",
                 "displayScale": "\(screen.backingScaleFactor)", "itemWidthPoints": "320"], uniquingKeysWith: { _, new in new }))
+        record("quality-upgrade-when-reopened-during-fade", reopenedDuringFade && highReady ? "passed" : "failed",
+               evidence: ["previousPanelStillVisible": "\(reopenedDuringFade)", "fadeOutMS": "300"])
         try? await Task.sleep(for: .milliseconds(200))
         let before = await controller.service.snapshotCaptureCount()
         controller.cancel()
@@ -606,16 +662,26 @@ private final class FixtureVerificationRun {
         }
         controller.preferences.backgroundPreloadEnabled = true
         controller.preferences.backgroundPreloadThumbnails = true
-        controller.preferences.backgroundPreloadInterval = 1
+        controller.preferences.backgroundPreloadInterval = 30
+        let preloadStart = Date()
         background.refreshBackgroundPreloading(permitted: true)
-        let placeholders = await wait(pollMilliseconds: 150) { background.preloadedThumbnailCount >= 2 }
+        let cached = await wait(pollMilliseconds: 150) {
+            background.preloadedWindowCount >= 2
+                && background.preloadedThumbnailCount >= min(32, background.preloadedWindowCount)
+        }
+        let preloadMS = Date().timeIntervalSince(preloadStart) * 1000
+        let preloadEvidence = await background.service.captureDiagnostics(windowID: windowID)
+        record("background-default-interval-fills-missing-previews-in-first-round", cached && preloadMS < 30_000 ? "passed" : "failed",
+               evidence: ["cachedImages": "\(background.preloadedThumbnailCount)", "intervalSeconds": "30", "firstRoundMS": "\(preloadMS)"])
+        record("background-previews-use-native-window-capture", cached && preloadEvidence["backend"] == "WindowServer"
+            && preloadEvidence["taskPriority"] == "\(TaskPriority.background.rawValue)" ? "passed" : "failed", evidence: preloadEvidence)
         background.stopBackgroundPreloading()
         background.begin(modifier: .maskAlternate, pointerScreen: screen)
         _ = await wait { background.panelIsVisible && !background.loading }
         let upgraded = await wait {
             background.thumbnails[windowID]?.cgImage(forProposedRect: nil, context: nil, hints: nil).map { max($0.width, $0.height) > 200 } == true
         }
-        record("background-placeholder-upgrades-to-high-on-open", placeholders && upgraded ? "passed" : "failed")
+        record("background-high-quality-cache-ready-on-open", cached && upgraded ? "passed" : "failed")
     }
 
     private func verifyOneWindowPerApp(_ controller: SwitchController, primary: WindowItem, other: WindowItem, screen: NSScreen) async {
@@ -844,6 +910,24 @@ private final class FixtureVerificationRun {
                                                   other: WindowItem, screen: NSScreen) async {
         guard isAllowed(primary.pid), isAllowed(other.pid), let otherID = other.windowID else { return }
         controller.preferences.windowRules = [WindowRule(bundleID: bundleID, titlePattern: "WSFixture_B")]
+        // The preceding Dock scenario minimizes both local windows. Establish
+        // this scenario's two live candidates before testing a windowless app.
+        guard let third = (await discover(primary.pid)).first(where: { $0.title == "WSFixture_C" }),
+              await act(.focus, on: third) else {
+            record("windowless-process-setup", "blocked", evidence: ["reason": "Fixture C was not restored after the Dock scenario"])
+            return
+        }
+        await controller.service.refreshApplicationInventory(pid: primary.pid)
+        let ready = await waitAsync {
+            let windows = await controller.service.discover(self.query(pid: primary.pid), cachedOnly: true)
+            return [primary.windowID, third.windowID].allSatisfy { id in
+                windows.contains { $0.windowID == id && $0.isOnScreen && !$0.isMinimized }
+            }
+        }
+        guard ready else {
+            record("windowless-process-setup", "blocked", evidence: ["reason": "Fixture A/C restoration did not settle"])
+            return
+        }
         _ = await act(.focus, on: primary)
         _ = await act(.focus, on: other, using: sentinelService)
         _ = await wait { self.focusedWindowID(pid: other.pid) == otherID }

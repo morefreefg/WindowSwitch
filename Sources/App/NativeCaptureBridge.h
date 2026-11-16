@@ -12,6 +12,8 @@ typedef struct {
     uint32_t outputHeight;
     uint32_t composedChildren;
     BOOL usedAXChildFallback;
+    double primaryCaptureMS;
+    double childLookupMS;
 } WSCaptureEvidence;
 
 /// Does not request permission. NULL lets the caller use ScreenCaptureKit.

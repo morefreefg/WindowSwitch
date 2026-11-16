@@ -56,6 +56,16 @@ private func describe(_ windows: [WindowItem]) -> String {
     private var quickScreenBounds = CGRect.zero
     private var quickDisplayBounds: [CGRect] = []
     private var quickFocusWork: Task<Void, Never>?
+    private struct QuickPreparation {
+        let windows: [WindowItem]
+        let focusedWindowID: UInt32?
+        let focusedPID: Int32?
+        let revision: UInt64
+        let focusStable: Bool
+    }
+    private var quickPreparation: Task<QuickPreparation?, Never>?
+    private var tabKeyPress: ShortcutKeyRelease?
+    private var sessionTabRelease: ShortcutKeyRelease?
     private var previewStamps: [UInt32: ThumbnailStamp] = [:]
     private var previewDates: [UInt32: Date] = [:]
     private(set) var lastQuickEvidence: [String: String] = [:]
@@ -116,7 +126,7 @@ private func describe(_ windows: [WindowItem]) -> String {
         return query
     }
 
-    func handle(type: CGEventType, event: CGEvent) -> Bool {
+    func handle(type: CGEventType, event: CGEvent, pointerScreen: NSScreen? = nil) -> Bool {
         if event.getIntegerValueField(.eventSourceUserData) == WindowService.syntheticEventMarker { return false }
         if type == .leftMouseDown || type == .rightMouseDown {
             if active, let panel, !panel.frame.contains(NSEvent.mouseLocation) { cancel() }
@@ -133,6 +143,17 @@ private func describe(_ windows: [WindowItem]) -> String {
             return false
         }
         let key = event.getIntegerValueField(.keyboardEventKeycode)
+        if key == 48 {
+            if type == .keyUp {
+                tabKeyPress?.release(); tabKeyPress = nil
+            } else if type == .keyDown, event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                // A fresh key-down proves the preceding press ended, even if its
+                // key-up was lost. Do not make that switch wait for this new press.
+                tabKeyPress?.release()
+                tabKeyPress = ShortcutKeyRelease(isHeld: true)
+                if active { sessionTabRelease = tabKeyPress }
+            }
+        }
         if type == .keyUp {
             if suppressedKeys.remove(key) != nil { return true }
             return recoverSwallowedQuickTap(key: key, event: event)
@@ -245,7 +266,10 @@ private func describe(_ windows: [WindowItem]) -> String {
             requested = .applications; modifier = preferences.applicationModifier
         } else { return false }
         switchLog.debug("hotkey accepted mode=\(String(describing: requested), privacy: .public)")
-        if let requested { begin(mode: requested, modifier: modifier.flag, reverse: reverse) }
+        if let requested {
+            begin(mode: requested, modifier: modifier.flag, reverse: reverse,
+                  pointerScreen: pointerScreen, tabRelease: key == 48 ? tabKeyPress : ShortcutKeyRelease(isHeld: false))
+        }
         suppressedKeys.insert(key)
         return true
     }
@@ -253,9 +277,12 @@ private func describe(_ windows: [WindowItem]) -> String {
     /// macOS loses the Tab key-up when the frontmost app changes while Tab is still held
     /// (the native ⌘Tab switcher shows the same), then treats the next Tab press as a repeat
     /// and drops it: every other quick tap went missing. Activate only after Tab is up.
-    private static func waitForTabRelease(timeout: Double = 0.25) async {
-        let deadline = CACurrentMediaTime() + timeout
-        while CGEventSource.keyState(.hidSystemState, key: 48), CACurrentMediaTime() < deadline {
+    private static func waitForTabRelease(_ press: ShortcutKeyRelease, timeout: Double = 0.25) async {
+        let began = CACurrentMediaTime()
+        while press.shouldWait(elapsed: CACurrentMediaTime() - began, timeout: timeout) {
+            // Direct/programmatic begin() callers have no key event stream.
+            // Event-driven gestures exclusively use their own remembered key-up.
+            if !press.eventDriven, !CGEventSource.keyState(.hidSystemState, key: 48) { press.release(); break }
             try? await Task.sleep(for: .milliseconds(1))
         }
     }
@@ -284,7 +311,8 @@ private func describe(_ windows: [WindowItem]) -> String {
         guard stillHeld || justReleased, now - downAt < 2 else { return false }
         keySinceWindowModifier = true
         switchLog.notice("recovered a quick tap whose Tab key-down never arrived (modifier \(stillHeld ? "held" : "just released", privacy: .public))")
-        begin(mode: .windows, modifier: flag, reverse: event.flags.contains(.maskShift) && preferences.reverseWithShift)
+        begin(mode: .windows, modifier: flag, reverse: event.flags.contains(.maskShift) && preferences.reverseWithShift,
+              tabRelease: ShortcutKeyRelease(isHeld: false))
         commit()
         return true
     }
@@ -311,8 +339,10 @@ private func describe(_ windows: [WindowItem]) -> String {
         }
     }
 
-    func begin(mode: SwitchMode = .windows, modifier: CGEventFlags = [], reverse: Bool = false, pointerScreen: NSScreen? = nil) {
+    func begin(mode: SwitchMode = .windows, modifier: CGEventFlags = [], reverse: Bool = false, pointerScreen: NSScreen? = nil,
+               tabRelease: ShortcutKeyRelease? = nil) {
         cancel()
+        sessionTabRelease = tabRelease ?? ShortcutKeyRelease(isHeld: CGEventSource.keyState(.hidSystemState, key: 48), eventDriven: false)
         active = true; loading = true; self.mode = mode; heldModifier = modifier
         displayDelayElapsed = false
         searching = false; browsingApplicationWindows = false
@@ -336,6 +366,14 @@ private func describe(_ windows: [WindowItem]) -> String {
             let top = NSScreen.screens.first?.frame.maxY ?? 0
             quickDisplayBounds = NSScreen.screens.map { CGRect(x: $0.frame.minX, y: top - $0.frame.maxY,
                                                              width: $0.frame.width, height: $0.frame.height) }
+            let preceding = quickFocusWork, service = service
+            quickPreparation = Task {
+                // A following gesture can start immediately, but its snapshot
+                // must observe the activation already submitted by its predecessor.
+                await preceding?.value
+                guard !Task.isCancelled else { return nil }
+                return await Self.prepareQuickSwitch(service: service, query: local)
+            }
             let holdDelay = max(50, preferences.quickHoldDelay)
             displayWork = Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(holdDelay))
@@ -356,11 +394,25 @@ private func describe(_ windows: [WindowItem]) -> String {
 
     private func promoteQuickGesture() {
         guard quickGesture, active else { return }
+        quickPreparation?.cancel(); quickPreparation = nil
         quickGesture = false; quickQuery = nil
         displayWork?.cancel(); displayWork = nil
         displayDelayElapsed = true
         let screen = preferredScreen()
         discoverForList(query: listQuery(screen: screen), screen: screen, token: session)
+    }
+
+    private static func prepareQuickSwitch(service: WindowService, query: WindowQuery) async -> QuickPreparation? {
+        let pidBefore = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let revisionBefore = await service.discoveryStatus().revision
+        let focused = await service.frontmostWindowID()
+        guard !Task.isCancelled else { return nil }
+        let windows = await service.discover(query, cachedOnly: true)
+        guard !Task.isCancelled else { return nil }
+        let revision = await service.discoveryStatus().revision
+        let focusedPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        return QuickPreparation(windows: windows, focusedWindowID: focused, focusedPID: focusedPID,
+                                revision: revision, focusStable: pidBefore == focusedPID && revisionBefore == revision)
     }
 
     private func discoverForList(query: WindowQuery, screen: NSScreen?, token: UUID) {
@@ -379,11 +431,11 @@ private func describe(_ windows: [WindowItem]) -> String {
             windows = listItems(windows)
             let evidence = await service.discoveryEvidenceSummary()
             switchLog.notice("list opened mode=\(String(describing: self.mode), privacy: .public) after=\(Int(Date().timeIntervalSince(self.sessionBegan) * 1000), privacy: .public)ms items=[\(describe(windows), privacy: .public)] \(evidence, privacy: .public)")
+            selection.start(windows, advance: false)
+            selection.move(pendingSteps)
             dropPreviewsBelowSettings(windows)
             applyPreloadedThumbnails(to: windows)
             spaceNumbers = SpaceService.badges(windowIDs: windows.filter { !$0.isOnScreen }.compactMap(\.windowID))
-            selection.start(windows, advance: false)
-            selection.move(pendingSteps)
             loading = false
             if mode == .applications { loadApplicationWindows(token: token) }
             if windows.isEmpty { message = AXIsProcessTrusted() ? "没有符合条件的窗口" : "请先在设置中授予辅助功能权限" }
@@ -456,8 +508,8 @@ private func describe(_ windows: [WindowItem]) -> String {
         // One capture at a time, at most 60 cached previews; no unbounded task fan-out.
         previewWork = Task { [weak self] in
             guard let self else { return }
-            // Let the cached panel reach the compositor before any missing snapshot work.
-            do { try await Task.sleep(for: .milliseconds(32)) } catch { return }
+            // Give the panel an opportunity to update; capture itself uses a separate worker.
+            await Task.yield()
             let ordered = [displayedSelection.selected].compactMap { $0 } + windows
             var seen: Set<UInt32> = []
             for item in ordered {
@@ -469,7 +521,7 @@ private func describe(_ windows: [WindowItem]) -> String {
                     guard !Task.isCancelled, session == token, active else { return }
                     thumbnails[id] = NSImage(cgImage: image, size: .zero)
                     previewStamps[id] = ThumbnailStamp(windowSize: item.frame.size, request: request); previewDates[id] = Date()
-                    do { try await Task.sleep(for: .milliseconds(32)) } catch { return }
+                    await Task.yield()
                 }
             }
         }
@@ -616,6 +668,11 @@ private func describe(_ windows: [WindowItem]) -> String {
         if quickGesture, let query = quickQuery {
             let screen = quickScreenBounds, screens = quickDisplayBounds
             let preceding = quickFocusWork
+            let preparation = quickPreparation
+            let release = sessionTabRelease ?? ShortcutKeyRelease(isHeld: false)
+            // Submitted work owns these objects. Cancelling the visible gesture
+            // or starting another one must not cancel an accepted switch.
+            quickPreparation = nil; sessionTabRelease = nil
             cancel()
             // Serialize taps so the next query observes the preceding activation.
             // Starting a new gesture must not cancel an activation already submitted.
@@ -623,18 +680,25 @@ private func describe(_ windows: [WindowItem]) -> String {
                 await preceding?.value
                 guard let self else { return }
                 let began = Date()
-                // Read focus and the cached inventory while Tab is still held; activation
-                // itself has to wait for the Tab key-up (see waitForTabRelease).
-                let service = service
-                let focusedRead = Task { await service.frontmostWindowID() }
-                let windowsRead = Task { await service.discover(query, cachedOnly: true) }
-                let focusedPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-                let focused = await focusedRead.value
-                let windows = await windowsRead.value
+                var prepared = await preparation?.value
+                let releaseWaitBegan = CACurrentMediaTime()
+                await Self.waitForTabRelease(release)
+                let releaseWaitMS = (CACurrentMediaTime() - releaseWaitBegan) * 1000
+                let revision = await service.discoveryStatus().revision
+                let currentPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                let reusedPreparation = prepared?.focusStable == true && prepared?.focusedPID == currentPID && prepared?.revision == revision
+                if !reusedPreparation {
+                    prepared = await Self.prepareQuickSwitch(service: service, query: query)
+                }
+                guard let prepared else { return }
+                let focused = prepared.focusedWindowID, focusedPID = prepared.focusedPID
+                let windows = prepared.windows
                 clearClosedPreviews(await service.knownClosedWindowIDs())
                 let candidatesOnScreen = QuickSwitchPolicy.candidates(windows, screen: screen, screens: screens)
                 let local = preferences.oneWindowPerApp ? WindowGrouping.onePerApplication(candidatesOnScreen) : candidatesOnScreen
                 lastQuickEvidence = ["candidateIDs": local.compactMap(\.windowID).map(String.init).joined(separator: ",")]
+                lastQuickEvidence["preparedSnapshotReused"] = "\(reusedPreparation)"
+                lastQuickEvidence["tabReleaseWaitMS"] = "\(releaseWaitMS)"
                 lastQuickEvidence["observedFocusedID"] = focused.map(String.init) ?? "none"
                 var candidates = QuickSwitchPolicy.orderedTargets(local, focusedWindowID: focused, focusedPID: focusedPID)
                 var scope = "pointer-display"
@@ -648,10 +712,9 @@ private func describe(_ windows: [WindowItem]) -> String {
                     return
                 }
                 var target = firstTarget, accepted = false
-                await Self.waitForTabRelease()
                 for candidate in candidates.prefix(8) {
                     target = candidate
-                    accepted = await service.perform(.focus, on: target)
+                    accepted = await service.performQuickFocus(target)
                     if accepted { break }
                     guard await service.isWindowMissing(target) else { break }
                     if let id = target.windowID {
@@ -672,6 +735,9 @@ private func describe(_ windows: [WindowItem]) -> String {
         let target = chosenWindow
         let wasNative = nativeSession
         let openDefault = preferences.openDefaultWindow && target?.id.hasPrefix("app:") == true && target?.windowID == nil
+        let release = sessionTabRelease ?? tabKeyPress
+            ?? ShortcutKeyRelease(isHeld: CGEventSource.keyState(.hidSystemState, key: 48), eventDriven: false)
+        sessionTabRelease = nil
         cancel()
         guard let target else { return }
         // Like a quick tap, a submitted switch must survive the next gesture starting
@@ -680,7 +746,7 @@ private func describe(_ windows: [WindowItem]) -> String {
         quickFocusWork = Task { [weak self] in
             await preceding?.value
             guard let self else { return }
-            await Self.waitForTabRelease()
+            await Self.waitForTabRelease(release)
             if wasNative { try? await Task.sleep(for: .milliseconds(50)) }
             let began = Date()
             let accepted = await service.perform(.focus, on: target)
@@ -695,6 +761,8 @@ private func describe(_ windows: [WindowItem]) -> String {
 
     func cancel() {
         dismissalWork?.cancel()
+        quickPreparation?.cancel(); quickPreparation = nil
+        sessionTabRelease?.cancel(); sessionTabRelease = nil
         session = UUID(); work?.cancel(); previewWork?.cancel(); displayWork?.cancel()
         applicationWork?.cancel(); hoverWork?.cancel(); fullPreview?.orderOut(nil)
         actionWork?.cancel(); actionWork = nil
@@ -851,7 +919,6 @@ private func describe(_ windows: [WindowItem]) -> String {
         guard configuration.enabled else { preferences.preloadStatus = ""; return }
         let token = preloadToken, service = service, resources = backgroundResources
         preloadWork = Task.detached(priority: .background) { [weak self] in
-            var cursor = 0
             var costMultiplier = 1.0
             while !Task.isCancelled {
                 guard await self?.preloadAllowed(token) == true else {
@@ -870,24 +937,27 @@ private func describe(_ windows: [WindowItem]) -> String {
                 let windows = await service.discover(configuration.query, cachedOnly: true)
                 guard !Task.isCancelled else { return }
                 await self?.acceptPreloadInventory(windows, token: token)
-                let eligible = Array(windows.filter { $0.windowID != nil }.prefix(32))
-                // One scaled screenshot per cycle: no fan-out or catch-up burst.
-                // Slow captures and resource pressure lengthen the next interval.
+                let eligible = await self?.orderedPreloadCandidates(windows, request: configuration.request, token: token) ?? []
+                // Fill missing previews in this round instead of waiting a full interval
+                // between windows. Captures stay sequential and yield between requests.
                 if configuration.thumbnails, policy.allowThumbnails, !eligible.isEmpty {
-                    for _ in 0..<1 {
+                    for item in eligible {
                         guard !Task.isCancelled,
-                              await self?.preloadAllowed(token) == true else { break }
-                        let item = eligible[cursor % eligible.count]; cursor += 1
+                              await self?.preloadAllowed(token) == true,
+                              BackgroundWorkPolicy(resources()).allowThumbnails else { break }
                         guard let id = item.windowID else { continue }
-                        let captureStart = CACurrentMediaTime()
                         if let image = await service.thumbnail(windowID: id, maxPixelSize: configuration.request.pixelSize,
                             interpolationQuality: configuration.request.quality, refresh: true, mayCapture: { BackgroundWorkPolicy(resources()).allowThumbnails }) {
                             await self?.acceptPreloadedImage(image, item: item, request: configuration.request, token: token)
                         }
-                        costMultiplier = CACurrentMediaTime() - captureStart > 0.25 ? min(4, costMultiplier * 2) : max(1, costMultiplier / 2)
+                        do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
                     }
                 }
-                let remaining = max(0.1, configuration.interval * max(policy.intervalMultiplier, costMultiplier) - (CACurrentMediaTime() - cycleStart))
+                let elapsed = CACurrentMediaTime() - cycleStart
+                costMultiplier = elapsed > max(0.25, configuration.interval * 0.25) ? min(4, costMultiplier * 2) : max(1, costMultiplier / 2)
+                // The interval applies to the whole round. An over-budget round still
+                // rests for at least a quarter of its duration; never run catch-up work.
+                let remaining = max(max(0.05, elapsed * 0.25), configuration.interval * max(policy.intervalMultiplier, costMultiplier) - elapsed)
                 do { try await Task.sleep(for: .seconds(remaining), tolerance: .seconds(min(1, remaining * 0.1))) } catch { return }
             }
         }
@@ -898,6 +968,15 @@ private func describe(_ windows: [WindowItem]) -> String {
         preloadConfiguration = nil
     }
     private func preloadAllowed(_ token: UUID) -> Bool { token == preloadToken && !active && panel?.isVisible != true }
+    private func orderedPreloadCandidates(_ windows: [WindowItem], request: ThumbnailRequest, token: UUID) -> [WindowItem] {
+        guard token == preloadToken else { return [] }
+        let eligible = Array(windows.filter { $0.windowID != nil }.prefix(32))
+        func needsImage(_ item: WindowItem) -> Bool {
+            guard let id = item.windowID else { return false }
+            return preloadedThumbnails[id]?.stamp.satisfies(windowSize: item.frame.size, request: request) != true
+        }
+        return eligible.filter(needsImage) + eligible.filter { !needsImage($0) }
+    }
     private func currentPreloadConfiguration(_ token: UUID) -> BackgroundPreloadConfiguration? {
         token == preloadToken ? preloadConfiguration : nil
     }
@@ -920,11 +999,9 @@ private func describe(_ windows: [WindowItem]) -> String {
             preloadedThumbnails[oldest] = nil
         }
     }
-    /// Runs before the panel is visible. A preview captured under an older quality, size or
-    /// display-scale setting is dropped so it is captured fresh (blank to image) rather than
-    /// staying low-resolution forever or being swapped while the panel is shown.
+    /// Runs when a new list session is populated, including reopening during the previous
+    /// session's fade-out. Quality requirements belong to the new selection and settings.
     private func dropPreviewsBelowSettings(_ windows: [WindowItem]) {
-        guard panel?.isVisible != true else { return }
         let request = thumbnailRequest
         for item in windows {
             guard let id = item.windowID, thumbnails[id] != nil else { continue }

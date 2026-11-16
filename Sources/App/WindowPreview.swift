@@ -221,29 +221,31 @@ final class WindowPreviewView: NSView {
         let key = "\(item.documentURL?.path ?? item.bundleID):\(pixels)"
         if key != iconKey {
             iconKey = key
-            let image: NSImage?
-            if let url = item.documentURL { image = NSWorkspace.shared.icon(forFile: url.path) }
-            else if let url = NSRunningApplication(processIdentifier: item.pid)?.bundleURL
-                ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: item.bundleID) {
-                let bundle = Bundle(url: url)
-                let filename = bundle?.object(forInfoDictionaryKey: "CFBundleIconFile") as? String
-                let path = filename.flatMap { name in
-                    bundle?.path(forResource: name, ofType: nil)
-                        ?? bundle?.path(forResource: (name as NSString).deletingPathExtension,
-                                        ofType: (name as NSString).pathExtension.isEmpty ? "icns" : (name as NSString).pathExtension)
-                }
-                image = path.flatMap(NSImage.init(contentsOfFile:)) ?? NSWorkspace.shared.icon(forFile: url.path)
-            } else { image = NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil) }
             if let cached = Self.icons.object(forKey: key as NSString) { icon.contents = cached }
-            else if let source = image?.cgImage(forProposedRect: nil, context: nil, hints: nil),
+            else {
+                let image: NSImage?
+                if let url = item.documentURL { image = NSWorkspace.shared.icon(forFile: url.path) }
+                else if let url = NSRunningApplication(processIdentifier: item.pid)?.bundleURL
+                    ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: item.bundleID) {
+                    let bundle = Bundle(url: url)
+                    let filename = bundle?.object(forInfoDictionaryKey: "CFBundleIconFile") as? String
+                    let path = filename.flatMap { name in
+                        bundle?.path(forResource: name, ofType: nil)
+                            ?? bundle?.path(forResource: (name as NSString).deletingPathExtension,
+                                            ofType: (name as NSString).pathExtension.isEmpty ? "icns" : (name as NSString).pathExtension)
+                    }
+                    image = path.flatMap(NSImage.init(contentsOfFile:)) ?? NSWorkspace.shared.icon(forFile: url.path)
+                } else { image = NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil) }
+                if let source = image?.cgImage(forProposedRect: nil, context: nil, hints: nil),
                     let bitmap = CGContext(data: nil, width: pixels, height: pixels, bitsPerComponent: 8,
                                            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
-                bitmap.interpolationQuality = .high
-                bitmap.draw(source, in: CGRect(x: 0, y: 0, width: pixels, height: pixels))
-                if let rendered = bitmap.makeImage() {
-                    Self.icons.setObject(rendered, forKey: key as NSString, cost: pixels * pixels * 4)
-                    icon.contents = rendered
+                    bitmap.interpolationQuality = .high
+                    bitmap.draw(source, in: CGRect(x: 0, y: 0, width: pixels, height: pixels))
+                    if let rendered = bitmap.makeImage() {
+                        Self.icons.setObject(rendered, forKey: key as NSString, cost: pixels * pixels * 4)
+                        icon.contents = rendered
+                    }
                 }
             }
         }

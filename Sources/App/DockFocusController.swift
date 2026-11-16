@@ -62,7 +62,11 @@ nonisolated enum SingleWindowActivation {
         var result = FocusResult(pid: pid, windowID: windowID)
         guard let process, let front, let post else { return result }
         result.stage = "window-identity"
-        let rows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []
+        // A visible target can be checked directly. Off-Space/minimized windows may
+        // need the full list, but ordinary quick taps should not enumerate it twice.
+        let specific = CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID) as? [[String: Any]] ?? []
+        let rows = specific.contains(where: { ($0[kCGWindowNumber as String] as? UInt32) == windowID })
+            ? specific : (CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? [])
         guard rows.contains(where: {
             ($0[kCGWindowOwnerPID as String] as? Int32) == pid
                 && ($0[kCGWindowNumber as String] as? UInt32) == windowID

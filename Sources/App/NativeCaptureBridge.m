@@ -151,6 +151,7 @@ static CFArrayRef WSCopyAXSheetIDs(uint32_t windowID) {
 CGImageRef WSCreateWindowPreview(uint32_t windowID, CGSize maxPixelSize,
     int quality, BOOL allowRetina, WSCaptureEvidence *evidence) {
     if (evidence) *evidence = (WSCaptureEvidence){0};
+    CFAbsoluteTime began = CFAbsoluteTimeGetCurrent();
     WSLoadCaptureAPI();
     if (evidence) evidence->symbolsAvailable = connection && getBounds && createImage;
     if (!windowID || !connection || !getBounds || !createImage || !CGPreflightScreenCaptureAccess()) return NULL;
@@ -197,6 +198,7 @@ CGImageRef WSCreateWindowPreview(uint32_t windowID, CGSize maxPixelSize,
     CGContextDrawImage(bitmap, CGRectMake(0, 0, width, height), source);
     CGContextFlush(bitmap);
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{ CGImageRelease(source); });
+    if (evidence) evidence->primaryCaptureMS = (CFAbsoluteTimeGetCurrent() - began) * 1000;
     if (windowGroup && copyChild) {
         // Keep child-window enumeration bounded.
         const int capacity = 4096;
@@ -220,7 +222,9 @@ CGImageRef WSCreateWindowPreview(uint32_t windowID, CGSize maxPixelSize,
         }
     }
     if (!evidence || evidence->composedChildren == 0) {
+        CFAbsoluteTime lookupBegan = CFAbsoluteTimeGetCurrent();
         CFArrayRef sheets = WSCopyAXSheetIDs(windowID);
+        if (evidence) evidence->childLookupMS = (CFAbsoluteTimeGetCurrent() - lookupBegan) * 1000;
         if (sheets) {
             for (CFIndex i = 0; i < CFArrayGetCount(sheets); ++i) {
                 uint32_t child = 0; CGRect frame = CGRectZero;

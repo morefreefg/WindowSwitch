@@ -37,7 +37,10 @@ private nonisolated struct WindowCaptureResult: Sendable {
 
 /// Blocking WindowServer capture has a separate executor from list/focus work.
 private actor WindowCaptureWorker {
-    func capture(_ key: ThumbnailKey) -> WindowCaptureResult {
+    func capture(_ key: ThumbnailKey, mayCapture: @Sendable () -> Bool) -> WindowCaptureResult? {
+        // A background request may wait behind another capture. Recheck its budget
+        // here, immediately before entering the blocking WindowServer API.
+        guard !Task.isCancelled, mayCapture() else { return nil }
         var evidence = WSCaptureEvidence()
         let began = Date()
         let box = key.fullRetina == nil ? CGSize(width: key.width, height: key.height) : .zero
@@ -48,6 +51,7 @@ private actor WindowCaptureWorker {
             "width": "\(evidence.outputWidth)", "height": "\(evidence.outputHeight)",
             "composedChildren": "\(evidence.composedChildren)", "quality": "\(key.quality)",
             "AXChildFallback": "\(evidence.usedAXChildFallback.boolValue)",
+            "primaryCaptureMS": "\(evidence.primaryCaptureMS)", "childLookupMS": "\(evidence.childLookupMS)",
             "taskPriority": "\(Task.currentPriority.rawValue)",
             "threadQoS": "\(Thread.current.qualityOfService.rawValue)",
             "captureMS": "\(Date().timeIntervalSince(began) * 1000)"])
@@ -734,7 +738,7 @@ actor WindowService {
         if let existing = pendingThumbnails[key] { return await existing.value }
         guard pendingThumbnails.count < 32 else { return nil }
         // Keep an old image available while a background refresh is in flight.
-        let task = Task(priority: refresh ? .background : Task.currentPriority) { await self.capture(key, background: refresh, mayCapture: mayCapture) }
+        let task = Task(priority: refresh ? .background : Task.currentPriority) { await self.capture(key, mayCapture: mayCapture) }
         pendingThumbnails[key] = task
         let image = await task.value
         pendingThumbnails[key] = nil
@@ -755,6 +759,28 @@ actor WindowService {
 
     func cancelPendingThumbnails() {
         for task in pendingThumbnails.values { task.cancel() }
+    }
+
+    /// Visible quick-switch targets already carry a PID/window ID from the compositor.
+    /// Reuse the exact AX handle instead of enumerating all of the app's windows again.
+    /// Native activation still checks the live owner before sending any focus events.
+    func performQuickFocus(_ item: WindowItem) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        guard singleWindowFocus, AXIsProcessTrusted(), item.isOnScreen,
+              !item.isMinimized, !item.isHidden, !isWindowMissing(item),
+              let id = item.windowID, elementPIDs[item.id] == item.pid,
+              let element = elements[item.id], SingleWindowActivation.windowID(for: element) == id else {
+            return await perform(.focus, on: item)
+        }
+        var pid: Int32 = 0
+        guard AXUIElementGetPid(element, &pid) == .success, pid == item.pid else {
+            return await perform(.focus, on: item)
+        }
+        lastFocusEvidence = ["lookupStrategy": "cached-pid-and-windowID", "singleWindowFocus": "true"]
+        let result = SingleWindowActivation.focusDetailed(pid: item.pid, windowID: id, element: element)
+        lastFocusEvidence.merge(result.evidence, uniquingKeysWith: { _, value in value })
+        if result.accepted { recordFocus(pid: item.pid, windowID: id) }
+        return result.accepted
     }
 
     func perform(_ action: WindowAction, on item: WindowItem) async -> Bool {
@@ -834,14 +860,14 @@ actor WindowService {
 
         switch action {
         case .focus:
-            if Self.boolean(kAXMinimizedAttribute, of: element) {
-                guard AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString,
-                                                   kCFBooleanFalse) == .success else { return false }
-            }
             if singleWindowFocus {
                 guard SingleWindowActivation.available,
                       let id = SingleWindowActivation.windowID(for: element) ?? item.windowID else { return false }
                 return focusSingle(item, windowID: id, element: element)
+            }
+            if Self.boolean(kAXMinimizedAttribute, of: element) {
+                guard AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString,
+                                                   kCFBooleanFalse) == .success else { return false }
             }
             guard await Self.applicationAction(.focus, pid: item.pid,
                                                 bundleID: item.bundleID) else { return false }
@@ -1071,11 +1097,11 @@ actor WindowService {
         return "ax:\(pid):\(UUID().uuidString)"
     }
 
-    private func backgroundSchedulingEvidence() -> [String: String] {
-        ["taskPriority": "\(Task.currentPriority.rawValue)", "threadQoS": "\(Thread.current.qualityOfService.rawValue)", "backend": "ScreenCaptureKit-background"]
+    private func captureSchedulingEvidence() -> [String: String] {
+        ["taskPriority": "\(Task.currentPriority.rawValue)", "threadQoS": "\(Thread.current.qualityOfService.rawValue)"]
     }
 
-    private func capture(_ key: ThumbnailKey, background: Bool = false, mayCapture: @Sendable () -> Bool = { true }) async -> CGImage? {
+    private func capture(_ key: ThumbnailKey, mayCapture: @Sendable () -> Bool = { true }) async -> CGImage? {
         while activeCaptures >= 2 {
             do { try await Task.sleep(for: .milliseconds(40)) }
             catch { return nil }
@@ -1085,13 +1111,11 @@ actor WindowService {
         captureCount += 1
         defer { activeCaptures -= 1 }
         if captureEvidence.count >= 128 { captureEvidence.removeAll() }
-        if background { captureEvidence[key.windowID] = backgroundSchedulingEvidence() }
-        else {
-            let original = await windowCaptureWorker.capture(key)
-            guard !Task.isCancelled else { return nil }
-            captureEvidence[key.windowID] = original.evidence
-            if let image = original.image { return image }
-        }
+        guard let original = await windowCaptureWorker.capture(key, mayCapture: mayCapture),
+              !Task.isCancelled else { return nil }
+        captureEvidence[key.windowID] = original.evidence
+        if let image = original.image { return image }
+        guard mayCapture() else { return nil }
         if Date().timeIntervalSince(shareableUpdated) > 4 {
             if contentRefresh == nil {
                 contentRefreshToken = UUID()
@@ -1119,7 +1143,10 @@ actor WindowService {
         if #available(macOS 14.2, *) { config.includeChildWindows = true }
         config.captureResolution = .nominal
         let image = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-        if image != nil, !background { captureEvidence[key.windowID]?["backend"] = "ScreenCaptureKit-fallback" }
+        if image != nil {
+            captureEvidence[key.windowID]?["backend"] = "ScreenCaptureKit-fallback"
+            captureEvidence[key.windowID]?.merge(captureSchedulingEvidence(), uniquingKeysWith: { _, value in value })
+        }
         return image
     }
 
