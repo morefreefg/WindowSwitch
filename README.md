@@ -30,6 +30,8 @@ The initial release uses an **ad-hoc signature and is not Apple-notarized**. mac
 
 Defaults: Command+Tab for the window list, Option+` for the current application's windows. Quick tap is enabled, with a 300 ms hold threshold. Shortcuts and display filters are configurable.
 
+With Karabiner-Elements 16.2 or later installed, **Settings → Performance → Receive the window shortcut directly from Karabiner-Elements** enables an optional input path for quick taps. It uses your configured modifier and Tab. Clearing the checkbox removes the rule from your Karabiner profile.
+
 ## Build
 
 Install Xcode 27 and [XcodeGen](https://github.com/yonaskolb/XcodeGen), then:

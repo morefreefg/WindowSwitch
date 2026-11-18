@@ -51,6 +51,8 @@ private func describe(_ windows: [WindowItem]) -> String {
     private var inventoryWork: Task<Void, Never>?
     private var cumulativeMouseDistance: CGFloat = 0
     private var displayDelayElapsed = false
+    private var directSession = false
+    private var directModifiers: Set<String> = []
     private var quickGesture = false
     private var quickQuery: WindowQuery?
     private var quickScreenBounds = CGRect.zero
@@ -161,7 +163,7 @@ private func describe(_ windows: [WindowItem]) -> String {
         if type == .flagsChanged { trackWindowModifier(event.flags) }
         if type == .keyDown { keySinceWindowModifier = true }
         if type == .flagsChanged {
-            if active && !heldModifier.isEmpty && !event.flags.contains(heldModifier) {
+            if active && !directSession && !heldModifier.isEmpty && !event.flags.contains(heldModifier) {
                 if nativeSession && !browsingApplicationWindows { cancel() } else { commit() }
             }
             return false
@@ -590,7 +592,42 @@ private func describe(_ windows: [WindowItem]) -> String {
         selection.select(id); loadApplicationWindows(token: session)
     }
 
-    func resetInput() { cancel(); suppressedKeys.removeAll() }
+    // Karabiner consumes the physical Tab. These edges never post keyboard input
+    // and can commit on modifier release even when the user is still holding Tab.
+    func directShortcut(_ edge: String, pointerScreen: NSScreen? = nil) {
+        switch edge {
+        case "leftDown", "rightDown":
+            directModifiers.insert(edge == "leftDown" ? "left" : "right")
+        case "leftUp", "rightUp":
+            directModifiers.remove(edge == "leftUp" ? "left" : "right")
+            if directSession && directModifiers.isEmpty { commit() }
+        case "tab", "reverseTab":
+            guard preferences.enabled, preferences.allWindowsEnabled, !directModifiers.isEmpty else { return }
+            keySinceWindowModifier = true
+            let reverse = edge == "reverseTab" && preferences.reverseWithShift
+            if active && directSession {
+                if quickGesture { promoteQuickGesture() }
+                advance(reverse ? -1 : 1)
+            } else {
+                begin(mode: .windows, modifier: preferences.windowModifier.flag, reverse: reverse,
+                      pointerScreen: pointerScreen, tabRelease: ShortcutKeyRelease(isHeld: false))
+                directSession = true
+            }
+        default: break
+        }
+    }
+
+    func resetDirectShortcut() {
+        if directSession { cancel() }
+        directModifiers.removeAll()
+    }
+
+    func sessionTapInterrupted() {
+        suppressedKeys.removeAll()
+        if !directSession { cancel() }
+    }
+
+    func resetInput() { resetDirectShortcut(); cancel(); suppressedKeys.removeAll() }
 
     func waitForQuickSwitch() async { await quickFocusWork?.value }
     var panelIsVisible: Bool { panel?.isVisible == true }
@@ -714,7 +751,7 @@ private func describe(_ windows: [WindowItem]) -> String {
                 var target = firstTarget, accepted = false
                 for candidate in candidates.prefix(8) {
                     target = candidate
-                    accepted = await service.performQuickFocus(target)
+                    accepted = await service.focusSwitcherTarget(target, quick: true, originPID: focusedPID, originID: focused)
                     if accepted { break }
                     guard await service.isWindowMissing(target) else { break }
                     if let id = target.windowID {
@@ -725,9 +762,15 @@ private func describe(_ windows: [WindowItem]) -> String {
                 }
                 lastQuickEvidence["targetID"] = target.windowID.map(String.init)
                 lastQuickEvidence["focusAccepted"] = "\(accepted)"
+                lastQuickEvidence.merge(await service.focusDiagnostics(), uniquingKeysWith: { _, new in new })
                 switchLog.notice("quick tap: \(scope, privacy: .public) focused=\(focused.map(String.init) ?? "none", privacy: .public) target=\(describe([target]), privacy: .public) accepted=\(accepted, privacy: .public) ms=\(Int(Date().timeIntervalSince(began) * 1000), privacy: .public)")
                 lastQuickEvidence["queryAndActivationMS"] = "\(Date().timeIntervalSince(began) * 1000)"
-                if !accepted { message = "当前无法切换到该窗口" }
+                if !accepted {
+                    let stage = lastQuickEvidence["activationStage"] ?? "unknown"
+                    let attempts = lastQuickEvidence["focusAttempts"] ?? "0"
+                    switchLog.notice("quick focus unconfirmed stage=\(stage, privacy: .public) attempts=\(attempts, privacy: .public)")
+                    message = "当前无法切换到该窗口"
+                }
             }
             return
         }
@@ -749,7 +792,7 @@ private func describe(_ windows: [WindowItem]) -> String {
             await Self.waitForTabRelease(release)
             if wasNative { try? await Task.sleep(for: .milliseconds(50)) }
             let began = Date()
-            let accepted = await service.perform(.focus, on: target)
+            let accepted = await service.focusSwitcherTarget(target, quick: false)
             switchLog.notice("list commit: target=\(describe([target]), privacy: .public) accepted=\(accepted, privacy: .public) ms=\(Int(Date().timeIntervalSince(began) * 1000), privacy: .public)")
             if !accepted {
                 message = "窗口已关闭或当前无法切换"
@@ -760,6 +803,7 @@ private func describe(_ windows: [WindowItem]) -> String {
     }
 
     func cancel() {
+        directSession = false
         dismissalWork?.cancel()
         quickPreparation?.cancel(); quickPreparation = nil
         sessionTabRelease?.cancel(); sessionTabRelease = nil

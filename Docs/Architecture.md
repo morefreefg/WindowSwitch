@@ -31,3 +31,11 @@ GitHub Actions runs unit tests and builds both architectures. It cannot replace 
 `UpdateController` uses Sparkle's native UI and settings. Startup/background checks begin after setup is ready; manual checks are also available. GitHub Pages publishes the signed appcast, GitHub Releases stores the signed ZIPs, and RC channel filtering is independent of window-switching state. Update downloads/installations are opt-in and do not share the screenshot worker. The pure feed tests reject missing signatures, mismatched versions, and foreign archive URLs.
 
 The six settings panes are General, App Switcher, Appearance, Performance, Updates, and About. They use small native controls, a 640×400 content area, and a system-drawn toolbar segmented control on the traffic-light row (no custom glass), over a full-size content view with a transparent titlebar so the header shares the window background. No settings pane has a scrolling container. Functional defaults live in a resource plist; authorization status and recent-document data are excluded.
+
+## Direct shortcut input
+
+The Performance preference is opt-in. Karabiner-Elements 16.2 or later supplies the local datagram sender and the persistent variable CLI. WindowSwitch adds one tagged rule after the user's rules in the selected profile, preserving other mappings and JSON comments. The rule forwards only window-switch gestures and modifier edges. The normal event tap continues to serve other keys and devices. Direct gestures own their modifier release and use the same window selection and hold timer as the standard shortcut.
+
+The receiver binds a socket in a private user directory before renewing a five-second rule expiry. Pausing, opening setup or quitting revokes the lease. An unexpected exit lets the rule expire. Disabling the preference removes the managed rule. Switching profiles or changing the window modifier reconciles the rule with the current configuration.
+
+Quick and list commits with a concrete window verify the frontmost PID and AX focused window ID. A transient failure may retry the same window once if focus stayed at the origin or moved to the destination app’s known previous window. A new click or key-down suppresses the retry. A visible compositor window missing from one AX enumeration remains eligible.

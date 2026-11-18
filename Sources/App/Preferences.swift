@@ -14,6 +14,9 @@ nonisolated enum ShortcutModifier: String, CaseIterable, Codable, Identifiable {
     private var restoringDefaults = false
     var runtimeStatus = ""
     var preloadStatus = ""
+    var karabinerVersion: String?
+    var karabinerStatus = ""
+    var directShortcutInput: Bool { didSet { save() } }
     var allWindowsEnabled: Bool { didSet { save() } }
     var currentWindowEnabled: Bool { didSet { save() } }
     var reverseWithShift: Bool { didSet { save() } }
@@ -69,6 +72,7 @@ nonisolated enum ShortcutModifier: String, CaseIterable, Codable, Identifiable {
         let settingsURL = Bundle.main.url(forResource: "DefaultSettings", withExtension: "plist")!
         let settings = NSDictionary(contentsOf: settingsURL) as? [String: Any] ?? [:]
         defaults.register(defaults: settings)
+        directShortcutInput = defaults.bool(forKey: "directShortcutInput")
         allWindowsEnabled = defaults.bool(forKey: "allWindowsEnabled")
         currentWindowEnabled = defaults.bool(forKey: "currentWindowEnabled")
         reverseWithShift = defaults.bool(forKey: "reverseWithShift")
@@ -118,6 +122,7 @@ nonisolated enum ShortcutModifier: String, CaseIterable, Codable, Identifiable {
 
     private func save() {
         guard !restoringDefaults else { return }
+        defaults.set(directShortcutInput, forKey: "directShortcutInput")
         defaults.set(allWindowsEnabled, forKey: "allWindowsEnabled"); defaults.set(currentWindowEnabled, forKey: "currentWindowEnabled")
         defaults.set(reverseWithShift, forKey: "reverseWithShift"); defaults.set(runInBackground, forKey: "runInBackground")
         defaults.set(showDockIcon, forKey: "showDockIcon"); defaults.set(showMenuBarIcon, forKey: "showMenuBarIcon")
@@ -159,7 +164,7 @@ nonisolated enum ShortcutModifier: String, CaseIterable, Codable, Identifiable {
         defaults.removePersistentDomain(forName: identifier)
         let fresh = Preferences(defaults: defaults)
         restoringDefaults = true
-        let flags: [ReferenceWritableKeyPath<Preferences, Bool>] = [\.allWindowsEnabled, \.currentWindowEnabled,
+        let flags: [ReferenceWritableKeyPath<Preferences, Bool>] = [\.directShortcutInput, \.allWindowsEnabled, \.currentWindowEnabled,
             \.reverseWithShift, \.runInBackground, \.showDockIcon, \.showMenuBarIcon, \.singleWindowFocus,
             \.enabled, \.dockFocusEnabled, \.applicationSwitcher, \.nativeAppEnhancement, \.openDefaultWindow,
             \.applicationAutoActivate, \.scrollWindowActions, \.includeMinimized, \.includeHidden, \.allSpaces,

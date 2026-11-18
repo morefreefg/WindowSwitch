@@ -51,6 +51,9 @@ struct PreferencesView: View {
                 loginError = ""
             } catch { loginError = error.localizedDescription }
         }
+        .onChange(of: preferences.directShortcutInput) { _, _ in refresh() }
+        .onChange(of: preferences.allWindowsEnabled) { _, _ in refresh() }
+        .onChange(of: preferences.windowModifier) { _, _ in refresh() }
         .onChange(of: preferences.showPreviews) { _, _ in refresh() }
         .onChange(of: preferences.backgroundPreloadEnabled) { _, _ in refresh() }
         .onChange(of: preferences.backgroundPreloadThumbnails) { _, _ in refresh() }
@@ -207,8 +210,24 @@ struct PreferencesView: View {
         }.toggleStyle(.checkbox)
     }
 
+    private var karabinerHint: String {
+        if !KarabinerInput.supports(preferences.karabinerVersion) { return "Requires Karabiner-Elements 16.2 or later." }
+        if !preferences.karabinerStatus.isEmpty { return preferences.karabinerStatus }
+        return "Adds a shortcut rule to your active Karabiner profile for faster, more reliable taps."
+    }
+
     private var performance: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if preferences.karabinerVersion != nil || preferences.directShortcutInput {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Receive the window shortcut directly from Karabiner-Elements", isOn: $preferences.directShortcutInput)
+                        .toggleStyle(.checkbox)
+                        .disabled(!preferences.directShortcutInput && !KarabinerInput.supports(preferences.karabinerVersion))
+                    Text(karabinerHint).font(.caption).foregroundStyle(.secondary)
+                        .padding(.leading, 18).fixedSize(horizontal: false, vertical: true)
+                }
+                Divider()
+            }
             VStack(alignment: .leading, spacing: 9) {
                 Toggle("Preload windows in the background", isOn: $preferences.backgroundPreloadEnabled)
                 HStack(spacing: 6) {

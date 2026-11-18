@@ -457,6 +457,51 @@ private final class FixtureVerificationRun {
         } catch { record("switcher-panel-render", "failed", evidence: ["reason": "Cannot render fixture panel"] ) }
         controller.cancel()
     }
+    private func verifyDirectShortcut(_ controller: SwitchController, first: WindowItem, second: WindowItem, screen: NSScreen) async {
+        let directory = URL(fileURLWithPath: "/tmp/ws-input-" + UUID().uuidString)
+        let receiver = ShortcutSocket(directory: directory)
+        var delivered = 0, passes = 0
+        defer {
+            receiver.close()
+            try? FileManager.default.removeItem(at: directory)
+            record("karabiner-socket-focus-roundtrip", passes == 100 ? "passed" : "failed",
+                   evidence: ["confirmedTaps": "\(passes)", "deliveredEdges": "\(delivered)", "expectedTaps": "100"])
+        }
+        do {
+            try receiver.open { edge in
+                controller.directShortcut(edge, pointerScreen: screen)
+                delivered += 1
+            }
+        } catch { return }
+        let fd = socket(AF_UNIX, SOCK_DGRAM, 0)
+        guard fd >= 0 else { return }
+        defer { Darwin.close(fd) }
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let size = MemoryLayout<sockaddr_un>.size
+        addr.sun_len = UInt8(size)
+        withUnsafeMutableBytes(of: &addr.sun_path) { $0.copyBytes(from: receiver.endpoint.path.utf8CString.map { UInt8(bitPattern: $0) }) }
+        let linked = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(size)) }
+        }
+        guard linked == 0 else { return }
+        for i in 0..<100 {
+            guard isAllowed(first.pid), isAllowed(second.pid) else { return }
+            let target = i.isMultiple(of: 2) ? second : first
+            let edges = i.isMultiple(of: 2) ? ["leftDown","tab","leftUp","tabUp"] : ["rightDown","tab","tabUp","rightUp"]
+            for edge in edges {
+                guard let payload = try? JSONEncoder().encode(edge) else { return }
+                guard payload.withUnsafeBytes({ send(fd, $0.baseAddress, $0.count, 0) }) == payload.count else { return }
+            }
+            guard await wait(pollMilliseconds: 2, { delivered == (i + 1) * 4 }) else { return }
+            await controller.waitForQuickSwitch()
+            guard controller.lastQuickEvidence["focusConfirmed"] == "true",
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid,
+                  focusedWindowID(pid: target.pid) == target.windowID, !controller.panelIsVisible else { return }
+            passes += 1
+        }
+    }
+
     private func verifyQuickSwitch(primaryPID: Int32, first: WindowItem, targets: [NSRunningApplication]) async {
         guard let screen = NSScreen.screens.first,
               let secondPID = targets.first(where: { $0.processIdentifier != primaryPID })?.processIdentifier,
@@ -484,6 +529,37 @@ private final class FixtureVerificationRun {
         defer { controller.stopBackgroundPreloading(); controller.cancel(); defaults.removeVolatileDomain(forName: UserDefaults.argumentDomain); defaults.removePersistentDomain(forName: suite) }
         await controller.service.startBackgroundMaintenance()
         await controller.warmInterface()
+        _ = await act(.focus, on: second, using: sentinelService)
+        _ = await act(.focus, on: first)
+        _ = await wait { self.focusedWindowID(pid: primaryPID) == firstID }
+        // Model a declined first request and then an unrelated focus change using only
+        // our disposable windows. Both paths go through the production readback loop.
+        let retry = await controller.service.verifyFocus(of: second, originPID: primaryPID, originID: firstID) { service, attempt in
+            if attempt == 2 { _ = await service.perform(.focus, on: second) }
+        }
+        let retryEvidence = await controller.service.focusDiagnostics()
+        record("exact-focus-retries-same-window-once",
+               retry && retryEvidence["focusAttempts"] == "2" && focusedWindowID(pid: secondPID) == secondID ? "passed" : "failed")
+        _ = await act(.focus, on: first)
+        if let sibling = (await discover(primaryPID)).first(where: { $0.title == "WSFixture_C" }) {
+            let stolen = await controller.service.verifyFocus(of: second, originPID: primaryPID, originID: firstID) { service, attempt in
+                _ = await service.perform(.focus, on: attempt == 1 ? sibling : second)
+            }
+            let evidence = await controller.service.focusDiagnostics()
+            record("exact-focus-leaves-new-user-window-alone",
+                   !stolen && evidence["focusAttempts"] == "1" && focusedWindowID(pid: primaryPID) == sibling.windowID ? "passed" : "failed")
+        }
+        if let sibling = (await discover(primaryPID)).first(where: { $0.title == "WSFixture_C" }) {
+            _ = await controller.service.perform(.focus, on: sibling)
+            _ = await controller.service.frontmostWindowID()
+            _ = await act(.focus, on: second, using: sentinelService)
+            let corrected = await controller.service.verifyFocus(of: first, originPID: secondPID, originID: secondID) { service, attempt in
+                _ = await service.perform(.focus, on: attempt == 1 ? sibling : first)
+            }
+            let evidence = await controller.service.focusDiagnostics()
+            record("exact-focus-corrects-apps-previous-window",
+                   corrected && evidence["focusAttempts"] == "2" && focusedWindowID(pid: primaryPID) == firstID ? "passed" : "failed")
+        }
         _ = await act(.focus, on: second, using: sentinelService)
         _ = await act(.focus, on: first)
         _ = await wait { self.focusedWindowID(pid: primaryPID) == firstID }
@@ -529,6 +605,7 @@ private final class FixtureVerificationRun {
                        "panelNeverShown": "\(!controller.panelIsVisible)", "maxTapMS": "\(latencies.max() ?? 0)",
                        "meanTapMS": "\(latencies.reduce(0, +) / Double(max(1, latencies.count)))"]
                 .merging(controller.lastQuickEvidence, uniquingKeysWith: { _, new in new }))
+        await verifyDirectShortcut(controller, first: first, second: second, screen: screen)
         // Submit one tap, then start and hold the next before its task runs.
         // The first activation must use its remembered key-up rather than wait
         // for the second Tab. Complete both taps before continuing the fixtures.

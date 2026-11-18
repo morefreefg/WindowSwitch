@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let preferences = Preferences()
     private lazy var controller = SwitchController(preferences: preferences)
     private let hotkeys = HotkeyMonitor()
+    private let karabiner = KarabinerInput()
     private lazy var dockFocus = DockFocusController(service: controller.service, onActivation: { [weak self] in self?.controller.cancel() })
     private let library = LibraryPanelController()
     private let nativeSwitcher = NativeAppSwitcherObserver()
@@ -128,7 +129,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         // Only a normal launch installs global input hooks. Diagnostics and smoke tests are inert.
         hotkeys.handler = { [weak self] type, event in self?.controller.handle(type: type, event: event) ?? false }
-        hotkeys.onInterruption = { [weak self] in self?.controller.resetInput() }
+        hotkeys.onInterruption = { [weak self] in self?.controller.sessionTapInterrupted() }
+        karabiner.receive = { [weak self] in self?.controller.directShortcut($0) }
+        karabiner.onStop = { [weak self] in self?.controller.resetDirectShortcut() }
+        karabiner.status = { [weak self] text in self?.preferences.karabinerStatus = text }
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(suspendDirectInput),
+            name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(suspendDirectInput),
+            name: NSWorkspace.willSleepNotification, object: nil)
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(suspendDirectInput),
+            name: Notification.Name("com.apple.screenIsLocked"), object: nil)
         controller.onSettings = { [weak self] in self?.showSettings() }
         controller.onRecentDocuments = { [weak self] bundle in self?.library.showDocuments(bundleID: bundle) }
         nativeSwitcher.onSelection = { [weak self] pid, visible in
@@ -163,7 +173,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         UserDefaults.standard.set(true, forKey: "hasLaunched")
     }
 
+    @objc private func suspendDirectInput() { karabiner.stop() }
+
     func applicationWillTerminate(_ notification: Notification) {
+        karabiner.stop()
         controller.stopBackgroundPreloading()
         Task { await controller.service.stopBackgroundMaintenance() }
         permissionTimer?.invalidate(); hotkeys.stop(); dockFocus.stop(); nativeSwitcher.stop(); permissionGuide.close(); controller.cancel()
@@ -192,14 +205,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func refreshHooks() {
+        if preferences.directShortcutInput || settingsWindow?.isVisible == true {
+            let version = KarabinerInput.installedVersion()
+            if preferences.karabinerVersion != version { preferences.karabinerVersion = version }
+        }
         let policy: NSApplication.ActivationPolicy = preferences.showDockIcon ? .regular : .accessory
         if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
         statusItem?.isVisible = preferences.showMenuBarIcon
         if settingsOnly {
+            karabiner.update(optedIn: preferences.directShortcutInput, modifier: nil)
             preferences.runtimeStatus = "当前仅显示设置；可从菜单栏选择“开始使用”。"
             return
         }
         guard permissionsReady, setupWindow?.isVisible != true else {
+            karabiner.update(optedIn: preferences.directShortcutInput, modifier: nil)
             hotkeys.stop(); dockFocus.stop(); nativeSwitcher.stop(); controller.resetInput()
             controller.stopBackgroundPreloading()
             if maintenancePermission { maintenancePermission = false; Task { await controller.service.stopBackgroundMaintenance() } }
@@ -237,6 +256,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             hotkeys.stop()
             if wasRunning || !preferences.enabled { controller.resetInput() }
         }
+        let karabinerRunning = runningIDs.contains("org.pqrs.Karabiner-Console-User-Server")
+        let directReady = preferences.directShortcutInput && hotkeys.running && preferences.allWindowsEnabled
+            && KarabinerInput.supports(preferences.karabinerVersion) && karabinerRunning
+            && KarabinerInput.desktopAvailable
+        karabiner.update(optedIn: preferences.directShortcutInput, modifier: directReady ? preferences.windowModifier : nil)
+        if preferences.directShortcutInput && !directReady {
+            let hint = karabinerRunning ? "Direct input is paused." : "Waiting for Karabiner-Elements to start."
+            if preferences.karabinerStatus != hint { preferences.karabinerStatus = hint }
+        }
         dockFocus.enabled = preferences.dockFocusEnabled
         if trusted && preferences.dockFocusEnabled && dockAvailable {
             if !dockFocus.start() { failures.append("Dock 单屏聚焦未能启动；当前系统权限或单窗口接口不可用。") }
@@ -252,6 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func showSettings() {
+        preferences.karabinerVersion = KarabinerInput.installedVersion()
         controller.cancel()
         if settingsWindow == nil {
             let view = PreferencesView(preferences: preferences, navigation: settingsNavigation, updates: updates, refresh: { [weak self] in self?.refreshHooks() },
@@ -315,7 +344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         PermissionReadiness(accessibility: AXIsProcessTrusted(), screenRecording: CGPreflightScreenCaptureAccess(), previewsEnabled: preferences.showPreviews).canStart
     }
     @objc private func showSetup() {
-        controller.cancel(); hotkeys.stop(); dockFocus.stop(); nativeSwitcher.stop()
+        karabiner.stop(); controller.cancel(); hotkeys.stop(); dockFocus.stop(); nativeSwitcher.stop()
         if setupWindow == nil {
             let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 480, height: 340), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "WindowSwitch 设置向导"; window.isReleasedWhenClosed = false; window.delegate = self

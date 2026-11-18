@@ -26,6 +26,9 @@ public nonisolated struct WindowRecency: Sendable {
         ranks = ranks.filter { $0.key.pid != pid }
         if last?.pid == pid { last = nil }
     }
+    public func lastFocusedWindowID(pid: Int32) -> UInt32? {
+        ranks.lazy.filter { $0.key.pid == pid }.max { $0.value < $1.value }?.key.windowID
+    }
     public func ordered(_ windows: [WindowItem]) -> [WindowItem] {
         func rank(_ item: WindowItem) -> UInt64 {
             item.windowID.flatMap { ranks[Key(pid: item.pid, windowID: $0)] } ?? 0

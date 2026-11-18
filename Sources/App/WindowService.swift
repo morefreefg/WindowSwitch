@@ -149,12 +149,17 @@ actor WindowService {
     }
 
     private func readAndRecordFocusedWindow(pid: Int32) -> UInt32? {
+        guard let id = focusedID(pid: pid) else { return nil }
+        recordFocus(pid: pid, windowID: id)
+        return id
+    }
+
+    private func focusedID(pid: Int32) -> UInt32? {
         guard pid != ProcessInfo.processInfo.processIdentifier else { return nil }
         let root = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(root, 0.04)
         guard let element = Self.element(kAXFocusedWindowAttribute, of: root),
               let id = SingleWindowActivation.windowID(for: element), closedWindowIDs[id] != pid else { return nil }
-        recordFocus(pid: pid, windowID: id)
         return id
     }
 
@@ -761,29 +766,103 @@ actor WindowService {
         for task in pendingThumbnails.values { task.cancel() }
     }
 
+    /// The activation API acknowledges a request before the target necessarily owns focus.
+    /// Read back both identities, and retry only while the original window still owns focus.
+    func focusSwitcherTarget(_ item: WindowItem, quick: Bool, originPID: Int32? = nil,
+                             originID: UInt32? = nil) async -> Bool {
+        guard let targetID = item.windowID, item.documentURL == nil,
+              !item.id.hasPrefix("app:") || singleWindowFocus else { return await perform(.focus, on: item) }
+        return await verifyFocus(of: item, originPID: originPID, originID: originID) { service, attempt in
+            if quick && attempt == 1 {
+                _ = await service.requestQuickFocus(item)
+            } else if attempt == 2 && service.singleWindowFocus && item.isOnScreen && !item.isMinimized && !item.isHidden {
+                // AX can temporarily omit a live window. The native request validates
+                // the compositor owner and exact ID before trying to raise that window.
+                let result = SingleWindowActivation.focusDetailed(pid: item.pid, windowID: targetID)
+                service.lastFocusEvidence.merge(result.evidence, uniquingKeysWith: { _, new in new })
+            } else { _ = await service.perform(.focus, on: item, recordAccepted: false) }
+        }
+    }
+
+    func verifyFocus(of item: WindowItem, originPID: Int32?, originID: UInt32?,
+                     attemptFocus: @Sendable (isolated WindowService, Int) async -> Void) async -> Bool {
+        guard let targetID = item.windowID else { return false }
+        let origin: (pid: Int32?, id: UInt32?)
+        if let originPID { origin = (originPID, originID) }
+        else { origin = await foregroundIdentity() }
+        let previousTargetWindow = origin.pid == item.pid ? nil : recency.lastFocusedWindowID(pid: item.pid)
+        let start = ContinuousClock.now
+        func userInput() -> [UInt32] {
+            [.leftMouseDown, .rightMouseDown, .keyDown].map {
+                CGEventSource.counterForEventType(.combinedSessionState, eventType: $0)
+            }
+        }
+        let input = userInput()
+        var attempts = 0
+        var confirmed = false
+        defer {
+            lastFocusEvidence["focusAttempts"] = String(attempts)
+            lastFocusEvidence["focusConfirmed"] = String(confirmed)
+        }
+        for attempt in 1...2 {
+            guard !Task.isCancelled, !isWindowMissing(item) else { return false }
+            attempts = attempt
+            await attemptFocus(self, attempt)
+
+            var observed = await foregroundIdentity()
+            for delay in [15, 35] {
+                if observed.pid == item.pid && observed.id == targetID { break }
+                if let pid = observed.pid, pid != origin.pid && pid != item.pid { return false }
+                do { try await Task.sleep(for: .milliseconds(delay)) } catch { return false }
+                observed = await foregroundIdentity()
+            }
+            lastFocusEvidence["observedPID"] = observed.pid.map(String.init) ?? "none"
+            lastFocusEvidence["observedWindowID"] = observed.id.map(String.init) ?? "none"
+            if observed.pid == item.pid && observed.id == targetID {
+                confirmed = true
+                recordFocus(pid: item.pid, windowID: targetID)
+                return true
+            }
+            // A late AX reply or an intervening click must not steal focus back.
+            let stillAtOrigin = origin.id != nil && observed.pid == origin.pid && observed.id == origin.id
+            // Some apps first activate their previous key window. Only correct that
+            // known sibling, and only when the user has made no intervening input.
+            let atPreviousTarget = previousTargetWindow != nil && observed.pid == item.pid && observed.id == previousTargetWindow
+            guard attempt == 1, start.duration(to: .now) < .seconds(2.5),
+                  stillAtOrigin || atPreviousTarget, userInput() == input else { return false }
+        }
+        return false
+    }
+
+    private func foregroundIdentity() async -> (pid: Int32?, id: UInt32?) {
+        let pid = await MainActor.run { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+        let id = pid.flatMap { focusedID(pid: $0) }
+        let after = await MainActor.run { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+        return pid == after ? (pid, id) : (after, nil)
+    }
+
     /// Visible quick-switch targets already carry a PID/window ID from the compositor.
     /// Reuse the exact AX handle instead of enumerating all of the app's windows again.
     /// Native activation still checks the live owner before sending any focus events.
-    func performQuickFocus(_ item: WindowItem) async -> Bool {
+    private func requestQuickFocus(_ item: WindowItem) async -> Bool {
         guard !Task.isCancelled else { return false }
         guard singleWindowFocus, AXIsProcessTrusted(), item.isOnScreen,
               !item.isMinimized, !item.isHidden, !isWindowMissing(item),
               let id = item.windowID, elementPIDs[item.id] == item.pid,
               let element = elements[item.id], SingleWindowActivation.windowID(for: element) == id else {
-            return await perform(.focus, on: item)
+            return await perform(.focus, on: item, recordAccepted: false)
         }
         var pid: Int32 = 0
         guard AXUIElementGetPid(element, &pid) == .success, pid == item.pid else {
-            return await perform(.focus, on: item)
+            return await perform(.focus, on: item, recordAccepted: false)
         }
         lastFocusEvidence = ["lookupStrategy": "cached-pid-and-windowID", "singleWindowFocus": "true"]
         let result = SingleWindowActivation.focusDetailed(pid: item.pid, windowID: id, element: element)
         lastFocusEvidence.merge(result.evidence, uniquingKeysWith: { _, value in value })
-        if result.accepted { recordFocus(pid: item.pid, windowID: id) }
         return result.accepted
     }
 
-    func perform(_ action: WindowAction, on item: WindowItem) async -> Bool {
+    func perform(_ action: WindowAction, on item: WindowItem, recordAccepted: Bool = true) async -> Bool {
         if action == .focus, isWindowMissing(item) { return false }
         defer {
             if action != .focus, item.pid > 0 { invalidateInventory(pid: item.pid) }
@@ -833,7 +912,7 @@ actor WindowService {
             if singleWindowFocus, let id = item.windowID {
                 guard AXIsProcessTrusted(), SingleWindowActivation.available,
                       let element = SingleWindowActivation.element(pid: item.pid, windowID: id) else { return false }
-                return focusSingle(item, windowID: id, element: element)
+                return focusSingle(item, windowID: id, element: element, recordAccepted: recordAccepted)
             }
             if singleWindowFocus, Self.compositorWindows().contains(where: {
                 $0.pid == item.pid && $0.layer == 0 && $0.frame.width >= 40 && $0.frame.height >= 30
@@ -851,7 +930,8 @@ actor WindowService {
         let resolved = if action == .focus { await focusElement(for: item) } else { liveElement(for: item) }
         if action == .focus { lastFocusEvidence.merge(lastLookupEvidence, uniquingKeysWith: { _, value in value }) }
         guard let element = resolved, !Task.isCancelled else {
-            if action == .focus, lastLookupEvidence["lookupStrategy"] == "confirmed-absent", let id = item.windowID {
+            if action == .focus, lastLookupEvidence["lookupStrategy"] == "confirmed-absent",
+               Self.compositorOwnerPresent(for: item) == false, let id = item.windowID {
                 forgetWindow(pid: item.pid, id: id)
             }
             if action == .focus { lastFocusEvidence["activationStage"] = "AX-window-identity" }
@@ -863,7 +943,7 @@ actor WindowService {
             if singleWindowFocus {
                 guard SingleWindowActivation.available,
                       let id = SingleWindowActivation.windowID(for: element) ?? item.windowID else { return false }
-                return focusSingle(item, windowID: id, element: element)
+                return focusSingle(item, windowID: id, element: element, recordAccepted: recordAccepted)
             }
             if Self.boolean(kAXMinimizedAttribute, of: element) {
                 guard AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString,
@@ -878,7 +958,7 @@ actor WindowService {
             _ = AXUIElementSetAttributeValue(current, kAXMainAttribute as CFString, kCFBooleanTrue)
             _ = AXUIElementSetAttributeValue(root, kAXFocusedWindowAttribute as CFString, current)
             let raised = AXUIElementPerformAction(current, kAXRaiseAction as CFString) == .success
-            if raised, let id = SingleWindowActivation.windowID(for: current) { recordFocus(pid: item.pid, windowID: id) }
+            if recordAccepted, raised, let id = SingleWindowActivation.windowID(for: current) { recordFocus(pid: item.pid, windowID: id) }
             return raised
         case .close:
             guard let close = Self.element(kAXCloseButtonAttribute, of: element) else { return false }
@@ -908,7 +988,7 @@ actor WindowService {
         }
     }
 
-    private func focusSingle(_ item: WindowItem, windowID: UInt32, element: AXUIElement) -> Bool {
+    private func focusSingle(_ item: WindowItem, windowID: UInt32, element: AXUIElement, recordAccepted: Bool) -> Bool {
         lastFocusEvidence["activationStage"] = "prepare-window"
         if Self.boolean(kAXMinimizedAttribute, of: element) {
             let code = AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
@@ -917,7 +997,7 @@ actor WindowService {
         }
         let result = SingleWindowActivation.focusDetailed(pid: item.pid, windowID: windowID, element: element)
         lastFocusEvidence.merge(result.evidence, uniquingKeysWith: { _, value in value })
-        if result.accepted { recordFocus(pid: item.pid, windowID: windowID) }
+        if recordAccepted && result.accepted { recordFocus(pid: item.pid, windowID: windowID) }
         return result.accepted
     }
 

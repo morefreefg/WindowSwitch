@@ -32,6 +32,8 @@
 	<true/>
 	<key>backgroundRGB</key>
 	<string>0,0,0</string>
+	<key>directShortcutInput</key>
+	<false/>
 	<key>currentModifier</key>
 	<string>option</string>
 	<key>currentWindowEnabled</key>
