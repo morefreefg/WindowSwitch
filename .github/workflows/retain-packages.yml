@@ -1,0 +1,21 @@
+name: Retain current packages
+on:
+  schedule:
+    - cron: '27 3 * * *'
+  workflow_dispatch:
+permissions:
+  actions: write
+  contents: write
+concurrency:
+  group: windowswitch-package-retention
+jobs:
+  retain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Remove superseded packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 Scripts/prune-packages.py --apply

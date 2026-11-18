@@ -128,6 +128,7 @@ actor WindowService {
     }
 
     private func forgetWindow(pid: Int32, id: UInt32) {
+        SwitchDiagnosticLog.shared.record("windowClosed", ["pid": String(pid), "windowID": String(id)])
         recency.remove(pid: pid, windowID: id)
         closedWindowIDs[id] = pid
         inventory[pid] = inventory[pid]?.filter { $0.value.windowID != id }
@@ -174,7 +175,11 @@ actor WindowService {
     }
 
     private func recordFocus(pid: Int32, windowID: UInt32) {
-        if recency.record(pid: pid, windowID: windowID) { inventoryPublishRevision &+= 1 }
+        if recency.record(pid: pid, windowID: windowID) {
+            inventoryPublishRevision &+= 1
+            SwitchDiagnosticLog.shared.record("recency", ["pid": String(pid), "windowID": String(windowID),
+                                                          "revision": String(inventoryPublishRevision)])
+        }
     }
 
     /// Cheap check for the open switcher: the set of visible normal windows on screen.
@@ -827,6 +832,11 @@ actor WindowService {
         var confirmed = false
         var requestMS = 0.0, readMS = 0.0, readAXMS = 0.0, settleMS = 0.0
         var nativeTimes: [String: Double] = [:]
+        var outcome = "unconfirmed"
+        func recordObservation(_ pid: Int32?, _ id: UInt32?, phase: String) {
+            SwitchDiagnosticLog.shared.record("focusRead", ["attempt": String(attempts), "phase": phase,
+                "targetPID": String(item.pid), "targetID": String(targetID), "frontPID": String(pid ?? 0), "focusedID": String(id ?? 0)])
+        }
         defer {
             verifyingFocus -= 1
             if !confirmed && maintenance != nil { focusDidChange() }
@@ -835,15 +845,19 @@ actor WindowService {
             lastFocusEvidence["readbackMS"] = String(readMS)
             lastFocusEvidence["readbackAXMS"] = String(readAXMS)
             lastFocusEvidence["settleMS"] = String(settleMS)
+            lastFocusEvidence["focusReason"] = outcome
             lastFocusEvidence["verificationEndedAt"] = String(CACurrentMediaTime())
             lastFocusEvidence["focusAttempts"] = String(attempts)
             lastFocusEvidence["focusConfirmed"] = String(confirmed)
         }
         for attempt in 1...2 {
-            guard !Task.isCancelled, !isWindowMissing(item) else { return false }
+            guard !Task.isCancelled else { outcome = "cancelled"; return false }
+            guard !isWindowMissing(item) else { outcome = "closed"; return false }
             attempts = attempt
             lastFocusEvidence = [:]
             let requestStart = CACurrentMediaTime()
+            SwitchDiagnosticLog.shared.record("activate", ["attempt": String(attempt), "originPID": String(origin.pid ?? 0),
+                "originID": String(origin.id ?? 0), "bundle": item.bundleID, "targetPID": String(item.pid), "targetID": String(targetID)])
             await attemptFocus(self, attempt)
             requestMS += (CACurrentMediaTime() - requestStart) * 1000
             for key in ["setFrontMS", "postMS", "raiseMS"] {
@@ -853,25 +867,28 @@ actor WindowService {
             var observed = foregroundIdentity()
             readMS += (CACurrentMediaTime() - readStart) * 1000
             readAXMS += observed.axMS
+            recordObservation(observed.pid, observed.id, phase: "immediate")
             var sawUnrelatedWindow = false
             for delay in [15, 35] {
                 if observed.pid == item.pid && observed.id == targetID { break }
-                if let pid = observed.pid, pid != origin.pid && pid != item.pid { return false }
+                if let pid = observed.pid, pid != origin.pid && pid != item.pid { outcome = "anotherProcess"; return false }
                 if observed.id != nil && !permitsRetry(pid: observed.pid, id: observed.id) {
                     sawUnrelatedWindow = true
                 }
                 let settleStart = CACurrentMediaTime()
-                do { try await Task.sleep(for: .milliseconds(delay)) } catch { return false }
+                do { try await Task.sleep(for: .milliseconds(delay)) } catch { outcome = "cancelled"; return false }
                 settleMS += (CACurrentMediaTime() - settleStart) * 1000
                 readStart = CACurrentMediaTime()
                 observed = foregroundIdentity()
                 readMS += (CACurrentMediaTime() - readStart) * 1000
                 readAXMS += observed.axMS
+                recordObservation(observed.pid, observed.id, phase: "after-\(delay)ms")
             }
             lastFocusEvidence["observedPID"] = observed.pid.map(String.init) ?? "none"
             lastFocusEvidence["observedWindowID"] = observed.id.map(String.init) ?? "none"
             if observed.pid == item.pid && observed.id == targetID {
                 confirmed = true
+                outcome = "matched"
                 if let pid = origin.pid, let id = origin.id, closedWindowIDs[id] != pid, userInput() == input {
                     recordFocus(pid: pid, windowID: id)
                 }
@@ -880,8 +897,10 @@ actor WindowService {
             }
             // A late AX reply or an intervening click must not steal focus back.
             // A transient third window also suppresses a retry if focus subsequently returns to the origin.
-            guard attempt == 1, !sawUnrelatedWindow, start.duration(to: .now) < .seconds(2.5),
-                  permitsRetry(pid: observed.pid, id: observed.id), userInput() == input else { return false }
+            guard !sawUnrelatedWindow, permitsRetry(pid: observed.pid, id: observed.id) else { outcome = "differentWindow"; return false }
+            guard userInput() == input else { outcome = "interveningInput"; return false }
+            guard attempt == 1 else { outcome = "retryExhausted"; return false }
+            guard start.duration(to: .now) < .seconds(2.5) else { outcome = "deadline"; return false }
         }
         return false
     }
@@ -1581,6 +1600,8 @@ private actor WindowInventoryWorker {
                      NSWorkspace.didUnhideApplicationNotification, NSWorkspace.activeSpaceDidChangeNotification] {
             tokens.append(center.addObserver(forName: name, object: nil, queue: .main) { notification in
                 let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                SwitchDiagnosticLog.shared.record("workspace", ["notification": notification.name.rawValue,
+                    "appPID": String(app?.processIdentifier ?? 0), "bundle": app?.bundleIdentifier ?? ""])
                 invalidate(app?.processIdentifier, notification.name == NSWorkspace.didActivateApplicationNotification)
             })
         }

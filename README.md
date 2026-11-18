@@ -72,7 +72,7 @@ Settings use six compact native tabs with no scrolling. New installs and Restore
 
 ## Privacy and compatibility
 
-Preferences and thumbnail caches stay on the Mac; thumbnails are held in memory. Recent documents and browser shortcuts are read locally only when their corresponding features are used. System permission prompts remain under macOS control.
+Local shortcut and focus diagnostics are stored in `~/Library/Logs/WindowSwitch/` and rotate at 100 MB total. Preferences and thumbnail caches stay on the Mac; thumbnails are held in memory. Recent documents and browser shortcuts are read locally only when their corresponding features are used. System permission prompts remain under macOS control.
 
 Some window focus, Space, and drawing operations depend on private macOS interfaces. Symbols are checked at runtime; OS updates may affect those features. Headless CI cannot validate cross-app Accessibility or multi-display input behavior. See [architecture and validation](Docs/Architecture.md).
 

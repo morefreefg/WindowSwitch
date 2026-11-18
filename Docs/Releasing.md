@@ -42,7 +42,7 @@ Packaging the styled DMG needs the `ds-store` package. Point `WINDOWSWITCH_PYTHO
 
 ## Testing local builds with real permissions
 
-`Scripts/dev-install.sh` builds the checkout, signs it with the same "WindowSwitch Release Signing" certificate, and replaces the installed app. Because the designated requirement matches the released app, Accessibility and Screen Recording stay granted, so changes can be exercised with real hotkeys before a release. It reads the keychain holding the certificate from `WINDOWSWITCH_SIGNING_KEYCHAIN` and that keychain's password file from `WINDOWSWITCH_SIGNING_KEYCHAIN_PASSWORD`; it refuses to install an unsigned or ad-hoc build. Switcher diagnostics are written to the unified log (`log show --predicate 'subsystem == "io.github.morefreefg.WindowSwitch"'`).
+`Scripts/dev-install.sh` builds the checkout, signs it with the same "WindowSwitch Release Signing" certificate, and replaces the installed app. Because the designated requirement matches the released app, Accessibility and Screen Recording stay granted, so changes can be exercised with real hotkeys before a release. It reads the keychain holding the certificate from `WINDOWSWITCH_SIGNING_KEYCHAIN` and that keychain's password file from `WINDOWSWITCH_SIGNING_KEYCHAIN_PASSWORD`; it refuses to install an unsigned or ad-hoc build. Persistent switcher diagnostics rotate at 100 MB total in `~/Library/Logs/WindowSwitch/`. The unified log is also available (`log show --predicate 'subsystem == "io.github.morefreefg.WindowSwitch"'`).
 
 ## GitHub-only update publishing
 
@@ -55,3 +55,6 @@ For a new release, push a version tag such as `v0.2.0-rc.2`, or publish a releas
 After publishing, the reusable Update feed workflow reads published stable/RC releases, ignores drafts and other pre-release channels, requires signed archive metadata, sorts by build number, signs the feed, and deploys it using GitHub Pages. Manual release publication/edit/deletion also refreshes the feed. No signing keys enter the Pages artifact. The client requires the signed feed and permits RC and stable channels by default; it does not send Sparkle system-profile data.
 
 Do not rename/reset the Build workflow's run-number sequence without explicitly preserving increasing bundle build numbers. Keep the application bundle ID stable for public updates. Private test builds with another identity open GitHub Releases for manual migration rather than trying to install an incompatible bundle.
+
+
+The signed feed advertises the newest stable build and a newer RC when available. The Retain current packages workflow runs nightly and can also run after a release. It keeps the newest successful Universal build artifact and removes older completed non-PR build artifacts. It checks the public DMG against its update metadata and the live feed before deleting superseded published releases. Drafts, git tags and commits are preserved.

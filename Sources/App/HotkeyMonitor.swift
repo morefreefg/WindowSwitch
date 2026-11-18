@@ -1,5 +1,6 @@
 import AppKit
 import os
+import WindowSwitchCore
 
 private let hotkeyLog = Logger(subsystem: "io.github.morefreefg.WindowSwitch", category: "hotkeys")
 
@@ -23,6 +24,7 @@ final class HotkeyMonitor {
                     let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(info).takeUnretainedValue()
                     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
                         hotkeyLog.error("event tap disabled by \(type == .tapDisabledByTimeout ? "timeout" : "user input", privacy: .public); re-enabling")
+                        SwitchDiagnosticLog.shared.record("eventTapInterrupted", ["reason": type == .tapDisabledByTimeout ? "timeout" : "userInput"])
                         monitor.onInterruption?()
                         if let tap = monitor.tap { CGEvent.tapEnable(tap: tap, enable: true) }
                         return false

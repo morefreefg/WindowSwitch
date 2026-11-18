@@ -22,6 +22,7 @@
 		1F7417F31AED06C9DD756BA1 /* WindowRuleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E94DFBA2A1FE94AA32735C63 /* WindowRuleTests.swift */; };
 		2519BA799417D632902B90C6 /* WindowSwitchCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 2507C2129375E8EDC43BDECE /* WindowSwitchCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		286A1EC236F785717628CE6A /* UpdateFeedProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F7C990AB6D4F6EB5FEBF035 /* UpdateFeedProbe.swift */; };
+		2A4BDF1BF8AA2B7D75B308C7 /* SwitchDiagnosticLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD687A176B85BAEC898A44EC /* SwitchDiagnosticLogTests.swift */; };
 		2BA1DF13093CCB570BC86613 /* ShortcutKeyRelease.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48E980154916D1DA1C6F4C1D /* ShortcutKeyRelease.swift */; };
 		2E5F3A1C043FCC3E4AEA4273 /* HotkeyMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0416192D369AD3DF7F05CAC /* HotkeyMonitor.swift */; };
 		34A592CD18722467CB250A7E /* KarabinerProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7893C02A3E82DE01278C2F1 /* KarabinerProfile.swift */; };
@@ -42,6 +43,7 @@
 		95299CE2BAE759DE064B69A9 /* WindowRecencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5FFF8025836AA60B18F4217 /* WindowRecencyTests.swift */; };
 		9A14F4362BE5324A3078B4AF /* WindowGroupingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59272F4C5A37C1271476BFD4 /* WindowGroupingTests.swift */; };
 		A498AF614EB97930BF071C9E /* DockFocusController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53F1B9BCF171A0C2CE25684C /* DockFocusController.swift */; };
+		A4A28C8E78C65EEA335E478C /* WindowServerDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43F39E66917E39F7062E6D08 /* WindowServerDiagnostics.swift */; };
 		A6EC21D869F1CFA4111BFE69 /* PreferencesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB5F57B11FFE1FE86B565282 /* PreferencesView.swift */; };
 		AD3FD8ED47891818173011AD /* WindowSwitchCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2507C2129375E8EDC43BDECE /* WindowSwitchCore.framework */; };
 		AF5D73BAB2808C56EB43C529 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48239D6F2686541B4A7649CC /* App.swift */; };
@@ -50,6 +52,7 @@
 		C4C0EE518B5E66293A1A2671 /* KarabinerProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66131FDE9D284B6D659F6B20 /* KarabinerProfileTests.swift */; };
 		C52019E9BE1F4A709F68B166 /* QuickSwitchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3464DED05218EB40548AB26 /* QuickSwitchTests.swift */; };
 		C52280F4B9DB36909DB5D1DC /* LibraryPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C85C7B4E6B3EDC12C3D26961 /* LibraryPanel.swift */; };
+		C9D350BDD73614DBB5C93241 /* SwitchDiagnosticLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99601978C6A186402A3EB43B /* SwitchDiagnosticLog.swift */; };
 		CB8C56FCC076C46C5621CE4C /* Preferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68FCDC22FCAF1A3E10074B5B /* Preferences.swift */; };
 		CD984F47AFBD8775F9D4D978 /* WindowRule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 490C901BB58BE47C64389C5B /* WindowRule.swift */; };
 		D02E06140B04B96CFAE921F8 /* WindowPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 091A28713FF1EB3E1E7C34B5 /* WindowPreview.swift */; };
@@ -132,6 +135,7 @@
 		3A7F5668073673E743EED605 /* WindowSwitch-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WindowSwitch-Bridging-Header.h"; sourceTree = "<group>"; };
 		3B1CF292F8A6DBC87A456459 /* KarabinerInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KarabinerInput.swift; sourceTree = "<group>"; };
 		3B9938B735392BE7C41B1FBD /* BackgroundWorkPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundWorkPolicyTests.swift; sourceTree = "<group>"; };
+		43F39E66917E39F7062E6D08 /* WindowServerDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowServerDiagnostics.swift; sourceTree = "<group>"; };
 		48239D6F2686541B4A7649CC /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
 		48E980154916D1DA1C6F4C1D /* ShortcutKeyRelease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutKeyRelease.swift; sourceTree = "<group>"; };
 		490C901BB58BE47C64389C5B /* WindowRule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowRule.swift; sourceTree = "<group>"; };
@@ -155,6 +159,7 @@
 		7F7C990AB6D4F6EB5FEBF035 /* UpdateFeedProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateFeedProbe.swift; sourceTree = "<group>"; };
 		88CCBFF7AC5E50ED74AB3339 /* WindowGrouping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowGrouping.swift; sourceTree = "<group>"; };
 		97A1888D5CA36DC70182FDF1 /* SwitchController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitchController.swift; sourceTree = "<group>"; };
+		99601978C6A186402A3EB43B /* SwitchDiagnosticLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitchDiagnosticLog.swift; sourceTree = "<group>"; };
 		A609563CD45FCD4968BD762C /* ApplicationActionsMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationActionsMenu.swift; sourceTree = "<group>"; };
 		A65D5ECD8A31C1A7B6E81080 /* WindowSwitchTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WindowSwitchTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A6D43DECDEE2C85ECCB2F94E /* SpaceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceService.swift; sourceTree = "<group>"; };
@@ -168,6 +173,7 @@
 		C68F0CF00E7F32CF4918204D /* InputHookPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputHookPolicyTests.swift; sourceTree = "<group>"; };
 		C85C7B4E6B3EDC12C3D26961 /* LibraryPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryPanel.swift; sourceTree = "<group>"; };
 		CCA5F4ECAE0D16851D5B15C9 /* SelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionTests.swift; sourceTree = "<group>"; };
+		CD687A176B85BAEC898A44EC /* SwitchDiagnosticLogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitchDiagnosticLogTests.swift; sourceTree = "<group>"; };
 		D7C825D41EC462FA571C7E4F /* test_update_feed.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = test_update_feed.py; sourceTree = "<group>"; };
 		DD1A08A5C44BA2F8A5038D23 /* WindowSwitch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WindowSwitch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DDC61A67D760719B32A13021 /* StableListOrder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StableListOrder.swift; sourceTree = "<group>"; };
@@ -225,6 +231,7 @@
 				CCA5F4ECAE0D16851D5B15C9 /* SelectionTests.swift */,
 				6B6F4AE7EF7F925968F9B87D /* ShortcutKeyReleaseTests.swift */,
 				E73BC789FD96511EF16D2435 /* StableListOrderTests.swift */,
+				CD687A176B85BAEC898A44EC /* SwitchDiagnosticLogTests.swift */,
 				EFAC19CA0F06CF60E697391A /* SwitcherLayoutTests.swift */,
 				D7C825D41EC462FA571C7E4F /* test_update_feed.py */,
 				F93764A78E0A76E365A98FE5 /* ThumbnailRequestTests.swift */,
@@ -258,6 +265,7 @@
 				1F14FBA4B0241FE137D357E2 /* Selection.swift */,
 				48E980154916D1DA1C6F4C1D /* ShortcutKeyRelease.swift */,
 				DDC61A67D760719B32A13021 /* StableListOrder.swift */,
+				99601978C6A186402A3EB43B /* SwitchDiagnosticLog.swift */,
 				1C2551C7267A33F8722501C5 /* SwitcherLayout.swift */,
 				36E44AF6C5FE3C18C19C98D7 /* ThumbnailRequest.swift */,
 				88CCBFF7AC5E50ED74AB3339 /* WindowGrouping.swift */,
@@ -325,6 +333,7 @@
 				7F7C990AB6D4F6EB5FEBF035 /* UpdateFeedProbe.swift */,
 				556649BB7B2C73990B02F92A /* Views.swift */,
 				091A28713FF1EB3E1E7C34B5 /* WindowPreview.swift */,
+				43F39E66917E39F7062E6D08 /* WindowServerDiagnostics.swift */,
 				E42DDF2D7483D5CBE61F0EE5 /* WindowService.swift */,
 				3A7F5668073673E743EED605 /* WindowSwitch-Bridging-Header.h */,
 				567D0A2D6D0846D2473C31F6 /* Resources */,
@@ -490,6 +499,7 @@
 				286A1EC236F785717628CE6A /* UpdateFeedProbe.swift in Sources */,
 				4D3A1C8CBF5C35FB81497E52 /* Views.swift in Sources */,
 				D02E06140B04B96CFAE921F8 /* WindowPreview.swift in Sources */,
+				A4A28C8E78C65EEA335E478C /* WindowServerDiagnostics.swift in Sources */,
 				FAEA983390F2270A1E47ADD3 /* WindowService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -508,6 +518,7 @@
 				F307A319ABDD3414B64D6501 /* Selection.swift in Sources */,
 				2BA1DF13093CCB570BC86613 /* ShortcutKeyRelease.swift in Sources */,
 				784A4FC29D080DF36D1D50E4 /* StableListOrder.swift in Sources */,
+				C9D350BDD73614DBB5C93241 /* SwitchDiagnosticLog.swift in Sources */,
 				E7B3FC1956F044453B08958F /* SwitcherLayout.swift in Sources */,
 				E11F92818510B4005C278B90 /* ThumbnailRequest.swift in Sources */,
 				047C6B1D3BFA08DB35C2F437 /* WindowGrouping.swift in Sources */,
@@ -528,6 +539,7 @@
 				6E53A7948046E958B8E99D08 /* SelectionTests.swift in Sources */,
 				0476B2071903A53E0F730D2F /* ShortcutKeyReleaseTests.swift in Sources */,
 				372426D65E169EE4B94BDDF7 /* StableListOrderTests.swift in Sources */,
+				2A4BDF1BF8AA2B7D75B308C7 /* SwitchDiagnosticLogTests.swift in Sources */,
 				12437684D276391CBF2D369F /* SwitcherLayoutTests.swift in Sources */,
 				E3D86A822A51D60A44DC957E /* ThumbnailRequestTests.swift in Sources */,
 				9A14F4362BE5324A3078B4AF /* WindowGroupingTests.swift in Sources */,
@@ -607,7 +619,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.2.0;
+				MARKETING_VERSION = 0.2.1;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -773,7 +785,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.2.0;
+				MARKETING_VERSION = 0.2.1;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

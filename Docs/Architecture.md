@@ -44,3 +44,12 @@ The Performance preference is opt-in. Karabiner-Elements 16.2 or later supplies 
 The receiver binds a socket in a private user directory before renewing a five-second rule expiry. Pausing, opening setup or quitting revokes the lease. An unexpected exit lets the rule expire. Disabling the preference removes the managed rule. Switching profiles or changing the window modifier reconciles the rule with the current configuration.
 
 Quick and list commits with a concrete window verify the frontmost PID and AX focused window ID. A transient failure may retry the same window once if focus stayed at the origin or moved to the destination app’s known previous window. A new click, key-down, or observation of an unrelated focused window suppresses the retry, even if focus returns to the origin during the settling interval. A visible compositor window missing from one AX enumeration remains eligible.
+
+
+## Local diagnostics
+
+WindowSwitch writes newline-delimited JSON to `~/Library/Logs/WindowSwitch/switch.jsonl`. Follow the `gesture` UUID from the event tap or Karabiner edge to the candidate order, target, activation attempt, actual foreground PID/window, retry decision and final duration. Workspace focus notifications and recency revisions use the same wall clock. Every record also carries the process ID and monotonic uptime. Switcher input records contain shortcut and modifier edges. Application names and bundle/window IDs identify candidates. Typed text, search queries, window titles, audio and images are excluded.
+
+For a failed switch or one lasting at least 100 ms, a background probe also looks for the target window's front-process, key-appearance and order-front requests in WindowServer's log. At most one such probe starts every 30 seconds. Its timestamps refer to system requests. A probe records its status even when the OS supplies no matching events.
+
+One current file and nine archives of up to 10,000,000 bytes give a combined 100 MB limit. Writes and rotation run off the input thread. When the bounded writer queue is full, the next accepted record reports the drop count. Real-window verification writes to its temporary fixture directory.

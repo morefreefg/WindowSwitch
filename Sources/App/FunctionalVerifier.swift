@@ -693,6 +693,7 @@ private final class FixtureVerificationRun {
             await verifyMissedFocusNotification(primary: first, other: second)
             await verifyGroupedDisplays(controller, primary: first, other: second, screen: screen)
             await verifyRecentWindowOrder(controller, primary: first, other: second, screen: screen)
+            verifyDiagnosticJournal()
             let captures = await controller.service.snapshotCaptureCount()
             record("focus-verification-without-capture", captures == 0 ? "passed" : "failed", evidence: ["captures": String(captures)])
             await controller.service.stopBackgroundMaintenance()
@@ -851,6 +852,33 @@ private final class FixtureVerificationRun {
         controller.begin(modifier: .maskAlternate, pointerScreen: screen)
         _ = await wait { controller.panelIsVisible && !controller.loading }
         record("disabling-app-grouping-restores-all-windows", Set(controller.displayedWindows.map(\.id)) == Set([primary.id, third.id, other.id]) ? "passed" : "failed")
+    }
+
+    private func verifyDiagnosticJournal() {
+        SwitchDiagnosticLog.shared.flush()
+        let file = URL(fileURLWithPath: fixturePath).deletingLastPathComponent().appendingPathComponent("Diagnostics/switch.jsonl")
+        var events: [String: Set<String>] = [:], edges: [String: Set<String>] = [:], matches: Set<String> = []
+        do {
+            for line in try Data(contentsOf: file).split(separator: 10) {
+                guard let row = try JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                      let trace = row["gesture"] as? String, let event = row["event"] as? String,
+                      let fields = row["fields"] as? [String: String] else { continue }
+                events[trace, default: []].insert(event)
+                if event == "input", fields["source"] == "karabiner", let edge = fields["edge"] {
+                    edges[trace, default: []].insert(edge)
+                }
+                if event == "result", fields["focusConfirmed"] == "true", fields["targetID"] == fields["observedWindowID"],
+                   fields["submitToResultMS"].flatMap(Double.init) != nil { matches.insert(trace) }
+            }
+        } catch { record("persistent-gesture-diagnostics", "failed"); return }
+        let complete = matches.filter { id in
+            guard let inputs = edges[id], let steps = events[id] else { return false }
+            return inputs.contains("tab") && inputs.contains("tabUp") &&
+                (inputs.isSuperset(of: ["leftDown", "leftUp"]) || inputs.isSuperset(of: ["rightDown", "rightUp"])) &&
+                steps.isSuperset(of: ["begin", "submit", "selection", "activate", "focusRead", "result"])
+        }
+        record("persistent-gesture-diagnostics", complete.count >= 100 ? "passed" : "failed",
+               evidence: ["completeKarabinerGestures": String(complete.count)])
     }
 
     private func verifyGroupedDisplays(_ controller: SwitchController, primary: WindowItem, other: WindowItem, screen: NSScreen) async {

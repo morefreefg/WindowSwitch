@@ -17,6 +17,13 @@ class FeedTests(unittest.TestCase):
         items=tree.findall('./channel/item');self.assertEqual(len(items),2)
         self.assertEqual(items[0].find('{'+feed.SPARKLE+'}channel').text,'rc')
         self.assertIsNone(items[1].find('{'+feed.SPARKLE+'}channel'))
+    def test_new_stable_supersedes_old_stable_and_rc(self):
+        def metadata(tag):
+            result=self.metadata(tag)
+            if tag=='v0.2.1':result['buildVersion']='50'
+            return result
+        tree=feed.build([self.release('v0.1.0',prerelease=False),self.release(),self.release('v0.2.1',prerelease=False)],metadata)
+        self.assertEqual([i.findtext('title') for i in tree.findall('./channel/item')], ['WindowSwitch 0.2.1'])
     def test_drafts_and_non_rc_prereleases_are_ignored(self):
         tree=feed.build([self.release(draft=True),self.release('v0.2.0-beta.1')],self.metadata)
         self.assertEqual(tree.findall('./channel/item'),[])

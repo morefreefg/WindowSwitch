@@ -34,12 +34,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private lazy var settingsToolbar = PreferencesToolbar(navigation: settingsNavigation)
     private var permissionTimer: Timer?
     private var loginItemError = ""
+    private var lastHookLog: [String: String] = [:]
     private var maintenancePermission = false
     private let logger = Logger(subsystem: "io.github.morefreefg.WindowSwitch", category: "application")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let icon = NSImage(named: "AppIcon") { NSApp.applicationIconImage = icon }
         let arguments = ProcessInfo.processInfo.arguments
+        SwitchDiagnosticLog.shared.record("launch", ["build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "",
+            "os": ProcessInfo.processInfo.operatingSystemVersionString, "displayCount": String(NSScreen.screens.count)])
         settingsOnly = arguments.contains("--settings-only") || arguments.contains("--smoke-test")
         if arguments.contains("--verify-fixture") {
             Task { await FunctionalVerifier.run() }
@@ -132,7 +135,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkeys.onInterruption = { [weak self] in self?.controller.sessionTapInterrupted() }
         karabiner.receive = { [weak self] in self?.controller.directShortcut($0) }
         karabiner.onStop = { [weak self] in self?.controller.resetDirectShortcut() }
-        karabiner.status = { [weak self] text in self?.preferences.karabinerStatus = text }
+        karabiner.status = { [weak self] text in
+            guard let self, preferences.karabinerStatus != text else { return }
+            preferences.karabinerStatus = text
+            SwitchDiagnosticLog.shared.record("karabinerStatus", ["status": text])
+        }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(suspendDirectInput),
             name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(suspendDirectInput),
@@ -176,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func suspendDirectInput() { karabiner.stop() }
 
     func applicationWillTerminate(_ notification: Notification) {
+        defer { SwitchDiagnosticLog.shared.record("exit"); SwitchDiagnosticLog.shared.flush() }
         karabiner.stop()
         controller.stopBackgroundPreloading()
         Task { await controller.service.stopBackgroundMaintenance() }
@@ -205,6 +213,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func refreshHooks() {
+        defer {
+            let state = ["enabled": String(preferences.enabled), "eventTap": String(hotkeys.running),
+                         "directRequested": String(preferences.directShortcutInput), "karabinerVersion": preferences.karabinerVersion ?? "",
+                         "windowModifier": preferences.windowModifier.rawValue, "accessibilityMaintenance": String(maintenancePermission),
+                         "settingsOnly": String(settingsOnly), "runtime": preferences.runtimeStatus]
+            if state != lastHookLog {
+                lastHookLog = state
+                SwitchDiagnosticLog.shared.record("hooks", state)
+            }
+        }
         if preferences.directShortcutInput || settingsWindow?.isVisible == true {
             let version = KarabinerInput.installedVersion()
             if preferences.karabinerVersion != version { preferences.karabinerVersion = version }

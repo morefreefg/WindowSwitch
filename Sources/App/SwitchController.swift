@@ -32,6 +32,10 @@ private func describe(_ windows: [WindowItem]) -> String {
     private var panel: SwitchPanel?
     private var heldModifier: CGEventFlags = []
     private var session = UUID()
+    @ObservationIgnored private var nativeTrace: UUID?
+    @ObservationIgnored private var nativeTabTrace: UUID?
+    @ObservationIgnored private var directTrace: UUID?
+    @ObservationIgnored private var directTabTrace: UUID?
     private var pendingSteps = 0
     private var commitWhenLoaded = false
     private var suppressedKeys: Set<Int64> = []
@@ -146,6 +150,16 @@ private func describe(_ windows: [WindowItem]) -> String {
         }
         let key = event.getIntegerValueField(.keyboardEventKeycode)
         if key == 48 {
+            if type == .keyDown, active || event.flags.contains(preferences.windowModifier.flag) ||
+                event.flags.contains(preferences.applicationModifier.flag) {
+                nativeTabTrace = active ? session : (event.flags.contains(preferences.windowModifier.flag) ? nativeTrace ?? UUID() : UUID())
+                SwitchDiagnosticLog.shared.record("input", gesture: nativeTabTrace, ["source": "eventTap", "edge": "tabDown",
+                    "eventNS": String(event.timestamp), "flags": String(event.flags.rawValue),
+                    "repeat": String(event.getIntegerValueField(.keyboardEventAutorepeat))])
+            } else if type == .keyUp, let trace = nativeTabTrace {
+                SwitchDiagnosticLog.shared.record("input", gesture: trace, ["source": "eventTap", "edge": "tabUp", "eventNS": String(event.timestamp)])
+                nativeTabTrace = nil
+            }
             if type == .keyUp {
                 tabKeyPress?.release(); tabKeyPress = nil
             } else if type == .keyDown, event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
@@ -160,10 +174,22 @@ private func describe(_ windows: [WindowItem]) -> String {
             if suppressedKeys.remove(key) != nil { return true }
             return recoverSwallowedQuickTap(key: key, event: event)
         }
-        if type == .flagsChanged { trackWindowModifier(event.flags) }
+        if type == .flagsChanged {
+            let down = windowModifierDownAt, up = windowModifierUpAt
+            trackWindowModifier(event.flags)
+            if down != windowModifierDownAt {
+                nativeTrace = UUID()
+                SwitchDiagnosticLog.shared.record("input", gesture: nativeTrace, ["source": "eventTap", "edge": "modifierDown", "eventNS": String(event.timestamp)])
+            } else if up != windowModifierUpAt {
+                SwitchDiagnosticLog.shared.record("input", gesture: nativeTrace, ["source": "eventTap", "edge": "modifierUp", "eventNS": String(event.timestamp)])
+            }
+        }
         if type == .keyDown { keySinceWindowModifier = true }
         if type == .flagsChanged {
             if active && !directSession && !heldModifier.isEmpty && !event.flags.contains(heldModifier) {
+                if heldModifier != preferences.windowModifier.flag {
+                    SwitchDiagnosticLog.shared.record("input", gesture: session, ["source": "eventTap", "edge": "modifierUp", "eventNS": String(event.timestamp)])
+                }
                 if nativeSession && !browsingApplicationWindows { cancel() } else { commit() }
             }
             return false
@@ -270,7 +296,8 @@ private func describe(_ windows: [WindowItem]) -> String {
         switchLog.debug("hotkey accepted mode=\(String(describing: requested), privacy: .public)")
         if let requested {
             begin(mode: requested, modifier: modifier.flag, reverse: reverse,
-                  pointerScreen: pointerScreen, tabRelease: key == 48 ? tabKeyPress : ShortcutKeyRelease(isHeld: false))
+                  pointerScreen: pointerScreen, tabRelease: key == 48 ? tabKeyPress : ShortcutKeyRelease(isHeld: false),
+                  trace: key == 48 ? nativeTabTrace : nil, inputSource: "eventTap")
         }
         suppressedKeys.insert(key)
         return true
@@ -312,9 +339,11 @@ private func describe(_ windows: [WindowItem]) -> String {
         let justReleased = windowModifierUpAt.map { now - $0 < 0.3 } ?? false
         guard stillHeld || justReleased, now - downAt < 2 else { return false }
         keySinceWindowModifier = true
+        SwitchDiagnosticLog.shared.record("input", gesture: nativeTrace, ["source": "eventTap", "edge": "recoveredTabUp",
+                                                                         "eventNS": String(event.timestamp)])
         switchLog.notice("recovered a quick tap whose Tab key-down never arrived (modifier \(stillHeld ? "held" : "just released", privacy: .public))")
         begin(mode: .windows, modifier: flag, reverse: event.flags.contains(.maskShift) && preferences.reverseWithShift,
-              tabRelease: ShortcutKeyRelease(isHeld: false))
+              tabRelease: ShortcutKeyRelease(isHeld: false), trace: nativeTrace, inputSource: "recoveredTabUp")
         commit()
         return true
     }
@@ -342,8 +371,9 @@ private func describe(_ windows: [WindowItem]) -> String {
     }
 
     func begin(mode: SwitchMode = .windows, modifier: CGEventFlags = [], reverse: Bool = false, pointerScreen: NSScreen? = nil,
-               tabRelease: ShortcutKeyRelease? = nil) {
+               tabRelease: ShortcutKeyRelease? = nil, trace: UUID? = nil, inputSource: String = "controller") {
         cancel()
+        if let trace { session = trace }
         sessionTabRelease = tabRelease ?? ShortcutKeyRelease(isHeld: CGEventSource.keyState(.hidSystemState, key: 48), eventDriven: false)
         active = true; loading = true; self.mode = mode; heldModifier = modifier
         displayDelayElapsed = false
@@ -356,6 +386,8 @@ private func describe(_ windows: [WindowItem]) -> String {
         let token = session
         let screen = preferredScreen()
         let query = listQuery(screen: screen)
+        SwitchDiagnosticLog.shared.record("begin", gesture: token, ["source": inputSource, "mode": String(describing: mode),
+            "frontPID": String(startingPID ?? 0), "reverse": String(reverse), "grouped": String(preferences.oneWindowPerApp)])
         if mode == .windows, !modifier.isEmpty, preferences.quickSwitchOnMouseScreen {
             quickGesture = true
             let mouseScreen = pointerScreen ?? NSScreen.screens.first { NSMouseInRect(mouseAtOpen, $0.frame, false) } ?? NSScreen.main
@@ -396,6 +428,7 @@ private func describe(_ windows: [WindowItem]) -> String {
 
     private func promoteQuickGesture() {
         guard quickGesture, active else { return }
+        SwitchDiagnosticLog.shared.record("showList", gesture: session)
         quickPreparation?.cancel(); quickPreparation = nil
         quickGesture = false; quickQuery = nil
         displayWork?.cancel(); displayWork = nil
@@ -433,6 +466,7 @@ private func describe(_ windows: [WindowItem]) -> String {
             windows = listItems(windows)
             let evidence = await service.discoveryEvidenceSummary()
             switchLog.notice("list opened mode=\(String(describing: self.mode), privacy: .public) after=\(Int(Date().timeIntervalSince(self.sessionBegan) * 1000), privacy: .public)ms items=[\(describe(windows), privacy: .public)] \(evidence, privacy: .public)")
+            SwitchDiagnosticLog.shared.record("list", gesture: token, ["order": describe(Array(windows.prefix(128))), "inventory": evidence])
             selection.start(windows, advance: false)
             selection.move(pendingSteps)
             dropPreviewsBelowSettings(windows)
@@ -595,6 +629,14 @@ private func describe(_ windows: [WindowItem]) -> String {
     // Karabiner consumes the physical Tab. These edges never post keyboard input
     // and can commit on modifier release even when the user is still holding Tab.
     func directShortcut(_ edge: String, pointerScreen: NSScreen? = nil) {
+        guard ["leftDown", "rightDown", "leftUp", "rightUp", "tab", "reverseTab", "tabUp"].contains(edge) else { return }
+        if (edge == "leftDown" || edge == "rightDown") && directModifiers.isEmpty { directTrace = UUID() }
+        if edge == "tab" || edge == "reverseTab" {
+            directTabTrace = active && directSession ? session : (directTrace ?? UUID())
+        }
+        SwitchDiagnosticLog.shared.record("input", gesture: ["tab", "reverseTab", "tabUp"].contains(edge) ? directTabTrace : directTrace,
+                                         ["source": "karabiner", "edge": edge])
+        if edge == "tabUp" { directTabTrace = nil }
         switch edge {
         case "leftDown", "rightDown":
             directModifiers.insert(edge == "leftDown" ? "left" : "right")
@@ -610,7 +652,8 @@ private func describe(_ windows: [WindowItem]) -> String {
                 advance(reverse ? -1 : 1)
             } else {
                 begin(mode: .windows, modifier: preferences.windowModifier.flag, reverse: reverse,
-                      pointerScreen: pointerScreen, tabRelease: ShortcutKeyRelease(isHeld: false))
+                      pointerScreen: pointerScreen, tabRelease: ShortcutKeyRelease(isHeld: false),
+                      trace: directTabTrace, inputSource: "karabiner")
                 directSession = true
             }
         default: break
@@ -620,6 +663,7 @@ private func describe(_ windows: [WindowItem]) -> String {
     func resetDirectShortcut() {
         if directSession { cancel() }
         directModifiers.removeAll()
+        directTrace = nil; directTabTrace = nil
     }
 
     func sessionTapInterrupted() {
@@ -702,6 +746,7 @@ private func describe(_ windows: [WindowItem]) -> String {
 
     func commit() {
         guard active else { return }
+        let trace = session
         if quickGesture, let query = quickQuery {
             let screen = quickScreenBounds, screens = quickDisplayBounds
             let preceding = quickFocusWork
@@ -710,7 +755,9 @@ private func describe(_ windows: [WindowItem]) -> String {
             // Submitted work owns these objects. Cancelling the visible gesture
             // or starting another one must not cancel an accepted switch.
             quickPreparation = nil; sessionTabRelease = nil
-            cancel()
+            cancel(reason: "submitted")
+            SwitchDiagnosticLog.shared.record("submit", gesture: trace, ["mode": "quick"])
+            let submittedAt = Date()
             let submitted = CACurrentMediaTime()
             // Serialize taps so the next query observes the preceding activation.
             // Starting a new gesture must not cancel an activation already submitted.
@@ -729,7 +776,10 @@ private func describe(_ windows: [WindowItem]) -> String {
                 if !reusedPreparation {
                     prepared = await Self.prepareQuickSwitch(service: service, query: query)
                 }
-                guard let prepared else { return nil }
+                guard let prepared else {
+                    SwitchDiagnosticLog.shared.record("result", gesture: trace, ["reason": "noSnapshot", "confirmed": "false"])
+                    return nil
+                }
                 let focused = prepared.focusedWindowID, focusedPID = prepared.focusedPID
                 let windows = prepared.windows
                 clearClosedPreviews(await service.knownClosedWindowIDs())
@@ -751,7 +801,11 @@ private func describe(_ windows: [WindowItem]) -> String {
                     candidates = QuickSwitchPolicy.fallbackTargets(visible, focusedWindowID: focused, focusedPID: focusedPID)
                     scope = "any-display"
                 }
+                SwitchDiagnosticLog.shared.record("selection", gesture: trace, ["scope": scope, "screen": NSStringFromRect(screen),
+                    "frontPID": String(focusedPID ?? 0), "focusedID": String(focused ?? 0), "local": describe(Array(local.prefix(128))),
+                    "orderedTargets": describe(Array(candidates.prefix(8))), "snapshotReused": String(reusedPreparation)])
                 guard let firstTarget = candidates.first else {
+                    SwitchDiagnosticLog.shared.record("result", gesture: trace, ["reason": "noCandidate", "confirmed": "false"])
                     switchLog.notice("quick tap: nothing to switch to focused=\(focused.map(String.init) ?? "none", privacy: .public) pointerDisplay=[\(describe(local), privacy: .public)]")
                     return nil
                 }
@@ -759,7 +813,9 @@ private func describe(_ windows: [WindowItem]) -> String {
                 var focusEvidence: [String: String] = [:]
                 for candidate in candidates.prefix(8) {
                     target = candidate
-                    (accepted, focusEvidence) = await service.focusSwitcherTarget(target, quick: true, originPID: focusedPID, originID: focused)
+                    (accepted, focusEvidence) = await SwitchDiagnosticLog.$currentGesture.withValue(trace) {
+                        await service.focusSwitcherTarget(candidate, quick: true, originPID: focusedPID, originID: focused)
+                    }
                     if accepted { break }
                     guard await service.isWindowMissing(target) else { break }
                     if let id = target.windowID {
@@ -781,6 +837,13 @@ private func describe(_ windows: [WindowItem]) -> String {
                     lastQuickEvidence["publishMS"] = String((completed - verified) * 1000)
                 }
                 lastQuickEvidence["submitToResultMS"] = String((completed - submitted) * 1000)
+                var diagnostic = lastQuickEvidence
+                diagnostic["bundle"] = target.bundleID
+                diagnostic["targetPID"] = String(target.pid)
+                SwitchDiagnosticLog.shared.record("result", gesture: trace, diagnostic)
+                if !accepted || completed - submitted >= 0.1 {
+                    WindowServerDiagnostics.sample(gesture: trace, window: target, submitted: submittedAt, finished: Date())
+                }
                 let stages = ["queueMS", "tabReleaseWaitMS", "requestMS", "setFrontMS", "postMS", "raiseMS", "readbackMS", "readbackAXMS", "settleMS", "publishMS", "afterSetFrontMS", "submitToResultMS"].map {
                     "\($0)=\(Int(Double(lastQuickEvidence[$0] ?? "") ?? 0))"
                 }.joined(separator: " ")
@@ -802,8 +865,10 @@ private func describe(_ windows: [WindowItem]) -> String {
         let release = sessionTabRelease ?? tabKeyPress
             ?? ShortcutKeyRelease(isHeld: CGEventSource.keyState(.hidSystemState, key: 48), eventDriven: false)
         sessionTabRelease = nil
-        cancel()
-        guard let target else { return }
+        cancel(reason: "submitted")
+        guard let target else { SwitchDiagnosticLog.shared.record("result", gesture: trace, ["reason": "noSelection"]); return }
+        SwitchDiagnosticLog.shared.record("submit", gesture: trace, ["mode": "list", "bundle": target.bundleID,
+            "targetID": String(target.windowID ?? 0), "targetPID": String(target.pid)])
         // Like a quick tap, a submitted switch must survive the next gesture starting
         // (fast users press again immediately); the next quick tap waits for it.
         let preceding = quickFocusWork
@@ -813,7 +878,10 @@ private func describe(_ windows: [WindowItem]) -> String {
             await Self.waitForTabRelease(release)
             if wasNative { try? await Task.sleep(for: .milliseconds(50)) }
             let began = Date()
-            let (accepted, _) = await service.focusSwitcherTarget(target, quick: false)
+            let (accepted, evidence) = await SwitchDiagnosticLog.$currentGesture.withValue(trace) {
+                await service.focusSwitcherTarget(target, quick: false)
+            }
+            SwitchDiagnosticLog.shared.record("result", gesture: trace, evidence.merging(["accepted": String(accepted)]) { _, new in new })
             switchLog.notice("list commit: target=\(describe([target]), privacy: .public) accepted=\(accepted, privacy: .public) ms=\(Int(Date().timeIntervalSince(began) * 1000), privacy: .public)")
             if !accepted {
                 message = "窗口已关闭或当前无法切换"
@@ -824,7 +892,8 @@ private func describe(_ windows: [WindowItem]) -> String {
         }
     }
 
-    func cancel() {
+    func cancel(reason: String = "cancelled") {
+        if active && reason != "submitted" { SwitchDiagnosticLog.shared.record("cancel", gesture: session, ["reason": reason]) }
         directSession = false
         dismissalWork?.cancel()
         quickPreparation?.cancel(); quickPreparation = nil

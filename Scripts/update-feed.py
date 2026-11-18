@@ -26,7 +26,12 @@ def build(releases, metadata_loader=get_json):
         if int(metadata['length'])<=0:raise ValueError('Invalid archive length')
         if release.get('prerelease') and '-rc' not in tag.lower():continue
         items.append((int(metadata['buildVersion']),release,metadata))
-    for _,release,metadata in sorted(items,key=lambda row:row[0],reverse=True)[:30]:
+    # A newer RC may coexist with the stable download for stable-only clients.
+    stable = max((row for row in items if not row[1].get('prerelease')), key=lambda row:row[0], default=None)
+    rc = max((row for row in items if row[1].get('prerelease')), key=lambda row:row[0], default=None)
+    retained = [rc] if rc and (not stable or rc[0] > stable[0]) else []
+    if stable:retained.append(stable)
+    for _,release,metadata in retained:
         item=ET.SubElement(channel,'item');ET.SubElement(item,'title').text='WindowSwitch '+metadata['version']
         ET.SubElement(item,'link').text=release['html_url']
         ET.SubElement(item,'description').text='WindowSwitch '+metadata['version']+'. View the GitHub release for details.'
