@@ -43,6 +43,7 @@ private final class FixtureVerificationRun {
     private let session: String
     private let fixturePath: String
     private let extended: Bool
+    private let focusOnly = ProcessInfo.processInfo.arguments.contains("--focus-only")
 
     init() {
         let arguments = ProcessInfo.processInfo.arguments
@@ -87,6 +88,10 @@ private final class FixtureVerificationRun {
             }
         }
         let baselinePID = targets.first(where: { state($0.processIdentifier)?["sentinel"] as? Bool == true })?.processIdentifier ?? pid
+        if ready, NSWorkspace.shared.frontmostApplication?.processIdentifier != baselinePID,
+           let baseline = targets.first(where: { $0.processIdentifier == baselinePID }) {
+            baseline.activate()
+        }
         let settled = ready ? await waitForStableFixtureFront(pid: baselinePID) : false
         record("fixture-launch-readiness", ready && settled ? "passed" : "blocked", evidence: [
             "allWindowsCreatedAndActivationObserved": "\(ready)", "baselinePID": "\(baselinePID)",
@@ -95,6 +100,13 @@ private final class FixtureVerificationRun {
         await service.setSingleWindowFocus(true)
         await sentinelService.setSingleWindowFocus(true)
         var windows = await discover(pid)
+        if windows.count < 3 {
+            // LaunchServices may publish the process before its AX window inventory is ready.
+            _ = await waitAsync {
+                windows = await self.discover(pid)
+                return windows.count >= 3
+            }
+        }
         guard let first = windows.first(where: { $0.title == "WSFixture_A" }),
               let firstID = first.windowID, windows.count >= 3 else {
             record("fixture-discovery", "failed", evidence: ["count": "\(windows.count)", "reason": "Expected A/B/C fixture windows with real IDs"])
@@ -461,11 +473,22 @@ private final class FixtureVerificationRun {
         let directory = URL(fileURLWithPath: "/tmp/ws-input-" + UUID().uuidString)
         let receiver = ShortcutSocket(directory: directory)
         var delivered = 0, passes = 0
+        var timings: [String: [Double]] = [:]
+        var failure: [String: String] = [:]
+        let testWindowIDs = Set([first.windowID, second.windowID].compactMap { $0 })
         defer {
             receiver.close()
             try? FileManager.default.removeItem(at: directory)
+            var summary = failure
+            for (stage, samples) in timings where !samples.isEmpty {
+                let sorted = samples.sorted()
+                for (label, fraction) in [("p50", 0.5), ("p95", 0.95)] {
+                    let index = Int(ceil(Double(sorted.count) * fraction)) - 1
+                    summary["\(stage).\(label)"] = String(format: "%.2f", sorted[index])
+                }
+            }
             record("karabiner-socket-focus-roundtrip", passes == 100 ? "passed" : "failed",
-                   evidence: ["confirmedTaps": "\(passes)", "deliveredEdges": "\(delivered)", "expectedTaps": "100"])
+                   evidence: ["confirmedTaps": "\(passes)", "deliveredEdges": "\(delivered)", "expectedTaps": "100"].merging(summary, uniquingKeysWith: { _, new in new }))
         }
         do {
             try receiver.open { edge in
@@ -495,9 +518,24 @@ private final class FixtureVerificationRun {
             }
             guard await wait(pollMilliseconds: 2, { delivered == (i + 1) * 4 }) else { return }
             await controller.waitForQuickSwitch()
-            guard controller.lastQuickEvidence["focusConfirmed"] == "true",
-                  NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid,
-                  focusedWindowID(pid: target.pid) == target.windowID, !controller.panelIsVisible else { return }
+            let observed = focusedWindowID(pid: target.pid)
+            let stackStart = CACurrentMediaTime()
+            var top = fixtureZOrder().first(where: testWindowIDs.contains)
+            // The WindowServer may publish the new stacking order after AX acknowledges the raise.
+            while top != target.windowID, CACurrentMediaTime() - stackStart < 0.15 {
+                try? await Task.sleep(for: .milliseconds(4))
+                top = fixtureZOrder().first(where: testWindowIDs.contains)
+            }
+            timings["verifyStackMS", default: []].append((CACurrentMediaTime() - stackStart) * 1000)
+            guard controller.lastQuickEvidence["focusConfirmed"] == "true", observed == target.windowID,
+                  top == target.windowID, !controller.panelIsVisible else {
+                failure = ["expectedID": String(target.windowID ?? 0), "observedID": String(observed ?? 0),
+                           "frontFixtureID": String(top ?? 0)].merging(controller.lastQuickEvidence, uniquingKeysWith: { a, _ in a })
+                return
+            }
+            for key in ["queueMS", "requestMS", "setFrontMS", "postMS", "raiseMS", "readbackMS", "readbackAXMS", "settleMS", "publishMS", "afterSetFrontMS", "submitToResultMS"] {
+                if let value = controller.lastQuickEvidence[key].flatMap(Double.init) { timings[key, default: []].append(value) }
+            }
             passes += 1
         }
     }
@@ -520,6 +558,7 @@ private final class FixtureVerificationRun {
         }
         let suite = "WindowSwitch.Verification.\(session)"
         guard let defaults = UserDefaults(suiteName: suite) else { return }
+        if focusOnly { defaults.set(false, forKey: "showPreviews") }
         let rule = WindowRule(bundleID: bundleID, titlePattern: "WSFixture_(B|C)")
         defaults.setVolatileDomain(["screenChoice": "main", "windowModifier": "option", "quickSwitchOnMouseScreen": true, "quickHoldDelay": 200.0, "allSpaces": true, "allScreens": true, "oneWindowPerApp": false,
             "windowRules": (try? JSONEncoder().encode([rule])) ?? Data(), "hoverPreview": false], forName: UserDefaults.argumentDomain)
@@ -531,7 +570,11 @@ private final class FixtureVerificationRun {
         await controller.warmInterface()
         _ = await act(.focus, on: second, using: sentinelService)
         _ = await act(.focus, on: first)
-        _ = await wait { self.focusedWindowID(pid: primaryPID) == firstID }
+        guard await wait({ self.focusedWindowID(pid: primaryPID) == firstID }) else {
+            record("quick-switch-initial-focus", "blocked", evidence: focusObservation(pid: primaryPID))
+            await controller.service.stopBackgroundMaintenance()
+            return
+        }
         // Model a declined first request and then an unrelated focus change using only
         // our disposable windows. Both paths go through the production readback loop.
         let retry = await controller.service.verifyFocus(of: second, originPID: primaryPID, originID: firstID) { service, attempt in
@@ -637,6 +680,16 @@ private final class FixtureVerificationRun {
         let cancelPreservedFocus = NSWorkspace.shared.frontmostApplication?.processIdentifier == primaryPID
             && self.focusedWindowID(pid: primaryPID) == firstID
         record("quick-tap-cancelled-preparation-never-activates", cancelPreservedFocus && !controller.panelIsVisible ? "passed" : "failed")
+        if focusOnly {
+            await verifyQueuedTaps(controller, first: first, second: second, screen: screen)
+            await verifyMissedFocusNotification(primary: first, other: second)
+            await verifyGroupedDisplays(controller, primary: first, other: second, screen: screen)
+            await verifyRecentWindowOrder(controller, primary: first, other: second, screen: screen)
+            let captures = await controller.service.snapshotCaptureCount()
+            record("focus-verification-without-capture", captures == 0 ? "passed" : "failed", evidence: ["captures": String(captures)])
+            await controller.service.stopBackgroundMaintenance()
+            return
+        }
         var gaps: [Double] = []
         let ticker = Task {
             var previous = Date()
@@ -790,6 +843,85 @@ private final class FixtureVerificationRun {
         controller.begin(modifier: .maskAlternate, pointerScreen: screen)
         _ = await wait { controller.panelIsVisible && !controller.loading }
         record("disabling-app-grouping-restores-all-windows", Set(controller.displayedWindows.map(\.id)) == Set([primary.id, third.id, other.id]) ? "passed" : "failed")
+    }
+
+    private func verifyGroupedDisplays(_ controller: SwitchController, primary: WindowItem, other: WindowItem, screen: NSScreen) async {
+        let rules = controller.preferences.windowRules, grouped = controller.preferences.oneWindowPerApp
+        controller.preferences.oneWindowPerApp = true
+        controller.preferences.windowRules = [WindowRule(bundleID: bundleID, titlePattern: "WSFixture_C")]
+        defer { controller.preferences.windowRules = rules; controller.preferences.oneWindowPerApp = grouped }
+        func tap(_ display: NSScreen, expecting target: WindowItem) async -> Bool {
+            for edge in ["leftDown", "tab", "tabUp", "leftUp"] { controller.directShortcut(edge, pointerScreen: display) }
+            let id = await controller.quickFocusWork?.value
+            return id != nil && id == target.windowID && focusedWindowID(pid: target.pid) == id
+        }
+        let seeded = await act(.focus, on: other)
+        _ = await controller.service.frontmostWindowID()
+        let start = await act(.focus, on: primary)
+        _ = await controller.service.frontmostWindowID()
+        let toOther = await tap(screen, expecting: other)
+        let back = await tap(screen, expecting: primary)
+        record("grouped-apps-short-tap-roundtrip", seeded && start && toOther && back ? "passed" : "failed")
+        guard let remoteScreen = NSScreen.screens.dropFirst().first,
+              let remote = (await discover(primary.pid)).first(where: { $0.title == "WSFixture_B" }) else {
+            record("same-process-cross-display-roundtrip", "skipped", required: false); return
+        }
+        let outbound = await tap(remoteScreen, expecting: remote)
+        let inbound = await tap(screen, expecting: primary)
+        record("same-process-cross-display-roundtrip", outbound && inbound ? "passed" : "failed",
+               evidence: ["outbound": String(outbound), "return": String(inbound)])
+    }
+
+    private func verifyQueuedTaps(_ controller: SwitchController, first: WindowItem, second: WindowItem, screen: NSScreen) async {
+        var confirmed: [UInt32] = []
+        var finalMatches = false
+        defer {
+            record("queued-taps-confirm-every-window", confirmed.count == 12 && finalMatches ? "passed" : "failed",
+                   evidence: ["confirmedInOrder": String(confirmed.count), "submitted": "12", "finalWindowMatches": String(finalMatches)])
+        }
+        guard await act(.focus, on: second), await act(.focus, on: first),
+              await wait({ self.focusedWindowID(pid: first.pid) == first.windowID }) else { return }
+        var tickets: [Task<UInt32?, Never>] = []
+        for _ in 0..<12 {
+            for edge in ["leftDown", "tab", "tabUp", "leftUp"] { controller.directShortcut(edge, pointerScreen: screen) }
+            guard let ticket = controller.quickFocusWork else { return }
+            tickets.append(ticket)
+        }
+        for (i, ticket) in tickets.enumerated() {
+            guard let id = await ticket.value, id == (i.isMultiple(of: 2) ? second.windowID : first.windowID) else { return }
+            confirmed.append(id)
+        }
+        finalMatches = focusedWindowID(pid: first.pid) == first.windowID
+    }
+
+    /// Use a separate reader with no notifications installed. A cached row query
+    /// must still show the real A → B → C order on its very first read.
+    private func verifyMissedFocusNotification(primary: WindowItem, other: WindowItem) async {
+        guard let third = (await discover(primary.pid)).first(where: { $0.title == "WSFixture_C" }) else {
+            record("missed-focus-notification-reconciled", "blocked"); return
+        }
+        let reader = WindowService()
+        var query = WindowQuery()
+        query.ownPID = ProcessInfo.processInfo.processIdentifier
+        query.allowedPIDs = fixturePIDs
+        _ = await reader.discover(query)
+        guard await reader.perform(.focus, on: primary),
+              await wait({ self.focusedWindowID(pid: primary.pid) == primary.windowID }) else {
+            record("missed-focus-notification-reconciled", "failed"); return
+        }
+        let items = [primary, other, third]
+        let ids = Set(items.compactMap(\.windowID))
+        var expected: [UInt32] = [], passes = 0, actual: [UInt32] = []
+        for target in items + [other, primary, third] {
+            guard let id = target.windowID, await act(.focus, on: target),
+                  await wait({ self.focusedWindowID(pid: target.pid) == id }) else { break }
+            expected.removeAll { $0 == id }; expected.insert(id, at: 0)
+            actual = (await reader.discover(query, cachedOnly: true)).compactMap(\.windowID).filter(ids.contains)
+            guard actual.starts(with: expected) else { break }
+            passes += 1
+        }
+        record("missed-focus-notification-reconciled", passes == 6 ? "passed" : "failed",
+               evidence: ["verifiedTransitions": String(passes), "actual": actual.description, "expected": expected.description])
     }
 
     private func verifyRecentWindowOrder(_ controller: SwitchController, primary: WindowItem, other: WindowItem, screen: NSScreen) async {
@@ -1113,14 +1245,17 @@ private final class FixtureVerificationRun {
         (await discover(pid)).first { $0.windowID == windowID }
     }
     private func act(_ action: WindowAction, on item: WindowItem, using targetService: WindowService? = nil) async -> Bool {
-        guard item.bundleID == bundleID, isAllowed(item.pid), item.documentURL == nil else { return false }
+        guard isAllowed(item.pid), NSRunningApplication(processIdentifier: item.pid)?.bundleIdentifier == item.bundleID,
+              item.documentURL == nil else { return false }
         return await (targetService ?? service).perform(action, on: item)
     }
     private func matches(_ app: NSRunningApplication) -> Bool {
-        guard app.bundleIdentifier == bundleID, !app.isTerminated,
-              app.bundleURL?.standardizedFileURL.resolvingSymlinksInPath().path == fixturePath,
-              let state = state(app.processIdentifier) else { return false }
-        return state["session"] as? String == session && state["bundleID"] as? String == bundleID
+        guard !app.isTerminated, let path = app.bundleURL?.standardizedFileURL.resolvingSymlinksInPath().path,
+              let id = app.bundleIdentifier, let state = state(app.processIdentifier) else { return false }
+        let sentinelPath = URL(fileURLWithPath: fixturePath).deletingLastPathComponent().appendingPathComponent("WindowSwitchSentinel.app").path
+        guard (id == bundleID && path == fixturePath) ||
+              (focusOnly && id == bundleID + ".sentinel" && path == sentinelPath) else { return false }
+        return state["session"] as? String == session && state["bundleID"] as? String == id
             && (state["pid"] as? NSNumber)?.int32Value == app.processIdentifier
     }
     private func isAllowed(_ pid: Int32) -> Bool {

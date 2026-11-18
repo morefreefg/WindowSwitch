@@ -12,6 +12,7 @@ render_ui=false
 capture_probe=false
 focus_stress=false
 quick_switch=false
+focus_only=false
 dock_input=false
 while (( $# > 0 )); do
   case "$1" in
@@ -21,9 +22,10 @@ while (( $# > 0 )); do
     --render-ui) render_ui=true; shift ;;
     --probe-capture) capture_probe=true; render_ui=true; shift ;;
     --focus-stress) focus_stress=true; shift ;;
+    --focus-only) quick_switch=true; focus_only=true; shift ;;
     --quick-switch) quick_switch=true; shift ;;
     --dock-input) dock_input=true; shift ;;
-    *) print -u2 -- "Usage: $0 [--app installed/WindowSwitch.app] [--extended] [--build-only]"; exit 64 ;;
+    *) print -u2 -- "Usage: $0 [--app installed/WindowSwitch.app] [--focus-only | --quick-switch] [--extended] [--build-only]"; exit 64 ;;
   esac
 done
 
@@ -52,7 +54,6 @@ cat > "$fixture_app/Contents/Info.plist" <<'PLIST'
 PLIST
 # This is a newly-created fixture only; the installed WindowSwitch identity is untouched.
 /usr/bin/codesign --force --sign - "$fixture_app" >/dev/null
-fixture_binary_canonical="${fixture_binary:A}"
 print -r -- "Fixture: $fixture_app"
 if $build_only; then exit 0; fi
 
@@ -60,18 +61,26 @@ if $build_only; then exit 0; fi
 app_bundle=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app_target/Contents/Info.plist")
 [[ "$app_bundle" == "${WINDOWSWITCH_APP_ID:-io.github.morefreefg.WindowSwitch}" ]] || { print -u2 -- 'Unexpected installed app bundle ID'; exit 65; }
 
+sentinel_app="$fixture_app"
+if $focus_only; then
+  sentinel_app="$fixture_root/WindowSwitchSentinel.app"
+  ditto "$fixture_app" "$sentinel_app"
+  plutil -replace CFBundleIdentifier -string io.github.morefreefg.WindowSwitchFixture.sentinel "$sentinel_app/Contents/Info.plist"
+  codesign --force --sign - "$sentinel_app" >/dev/null
+fi
+sentinel_binary="$sentinel_app/Contents/MacOS/WindowSwitchFixture"
 fixture_pid=""
 sentinel_pid=""
 cleanup_fixture() {
-  python3 - "$fixture_binary" "$fixture_binary_canonical" "$session" <<'PY'
+  python3 - "$fixture_binary" "$sentinel_binary" "$session" <<'PY'
 import os, shlex, signal, subprocess, sys
-paths, session = set(sys.argv[1:3]), sys.argv[3]
+paths, session = {os.path.realpath(p) for p in sys.argv[1:3]}, sys.argv[3]
 for line in subprocess.check_output(['/bin/ps', '-axo', 'pid=,uid=,command='], text=True).splitlines():
     parts = line.strip().split(None, 2)
     if len(parts) != 3 or parts[1] != str(os.getuid()): continue
     try:
         args = shlex.split(parts[2])
-        if args[0] in paths and args[args.index('--session') + 1] == session:
+        if os.path.realpath(args[0]) in paths and args[args.index('--session') + 1] == session:
             os.kill(int(parts[0]), signal.SIGTERM)
     except (ValueError, IndexError, ProcessLookupError): pass
 PY
@@ -101,7 +110,7 @@ fixture_arguments=(--session "$session")
 if $capture_probe; then fixture_arguments+=(--capture-child); fi
 /usr/bin/open -n "$fixture_app" --args "${fixture_arguments[@]}"
 fixture_pid=$(wait_fixture false)
-/usr/bin/open -n "$fixture_app" --args --session "$session" --sentinel
+/usr/bin/open -n "$sentinel_app" --args --session "$session" --sentinel
 sentinel_pid=$(wait_fixture true)
 
 verifier_args=(--verify-fixture --fixture-session "$session" --fixture-app "$fixture_app")
@@ -109,6 +118,7 @@ if $extended; then verifier_args+=(--extended); fi
 if $render_ui; then verifier_args+=(--render-ui); fi
 if $capture_probe; then verifier_args+=(--probe-capture); fi
 if $focus_stress; then verifier_args+=(--focus-stress); fi
+if $focus_only; then verifier_args+=(--focus-only); fi
 if $quick_switch; then verifier_args+=(--quick-switch); fi
 if $dock_input; then verifier_args+=(--dock-input); fi
 /usr/bin/open -n -g --stdout "$fixture_root/verifier.log" --stderr "$fixture_root/verifier-error.log" \

@@ -16,6 +16,8 @@ nonisolated enum SingleWindowActivation {
         var postDownCode: Int32?
         var postUpCode: Int32?
         var raiseCode: Int32?
+        var frontReturnedAt: CFTimeInterval?
+        var setFrontMS = 0.0, postMS = 0.0, raiseMS = 0.0
 
         var evidence: [String: String] {
             ["activationAccepted": "\(accepted)", "activationStage": stage,
@@ -24,6 +26,8 @@ nonisolated enum SingleWindowActivation {
              "SLPSSetFrontProcess": frontCode.map(String.init) ?? "not-called",
              "SLPSPostDown": postDownCode.map(String.init) ?? "not-called",
              "SLPSPostUp": postUpCode.map(String.init) ?? "not-called",
+             "frontReturnedAt": frontReturnedAt.map { String($0) } ?? "",
+             "setFrontMS": String(setFrontMS), "postMS": String(postMS), "raiseMS": String(raiseMS),
              "AXRaise": raiseCode.map(String.init) ?? "not-called"]
         }
     }
@@ -77,7 +81,11 @@ nonisolated enum SingleWindowActivation {
         result.processCode = processResult
         guard processResult == noErr else { return result }
         result.stage = "set-front"
+        let frontStart = CACurrentMediaTime()
         let frontResult = front(&psn, windowID, 0x200)
+        let frontEnd = CACurrentMediaTime()
+        result.setFrontMS = (frontEnd - frontStart) * 1000
+        result.frontReturnedAt = frontEnd
         result.frontCode = frontResult.rawValue
         guard frontResult == .success else { return result }
         var bytes = [UInt8](repeating: 0, count: 0xf8)
@@ -89,16 +97,20 @@ nonisolated enum SingleWindowActivation {
         }
         for index in 0..<0x10 { bytes[0x20 + index] = 0xff }
         bytes[0x08] = 0x01
+        let postStart = CACurrentMediaTime()
         let first = post(&psn, &bytes)
         result.postDownCode = first.rawValue
         bytes[0x08] = 0x02
         let second = post(&psn, &bytes)
+        result.postMS = (CACurrentMediaTime() - postStart) * 1000
         result.postUpCode = second.rawValue
         result.stage = "post-records"
         guard first == .success, second == .success else { return result }
+        let raiseStart = CACurrentMediaTime()
         if let target = element ?? self.element(pid: pid, windowID: windowID) {
             result.raiseCode = AXUIElementPerformAction(target, kAXRaiseAction as CFString).rawValue
         }
+        result.raiseMS = (CACurrentMediaTime() - raiseStart) * 1000
         result.stage = "completed"
         result.accepted = true
         return result

@@ -20,12 +20,14 @@ public nonisolated enum QuickSwitchPolicy {
     /// - Focus on this display: every other window, most recent first.
     /// - Focus on another display: this display's most recent window first, so one tap lands
     ///   where the user is pointing instead of skipping to the runner-up.
-    /// - Focus unknown, or held by a non-listed window of `local[0]`'s app: the runner-up.
-    public static func orderedTargets(_ local: [WindowItem], focusedWindowID: UInt32?, focusedPID: Int32?) -> [WindowItem] {
+    /// - Missing focused ID: keep the MRU leader if its PID differs from the known front app.
+    public static func orderedTargets(_ local: [WindowItem], focusedWindowID: UInt32?, focusedPID: Int32?,
+                                      focusOnOtherDisplay: Bool = false) -> [WindowItem] {
         if let focusedWindowID, local.contains(where: { $0.windowID == focusedWindowID }) {
             return local.filter { $0.windowID != focusedWindowID }
         }
-        if focusedWindowID != nil, let focusedPID, let first = local.first, first.pid != focusedPID { return local }
+        if focusOnOtherDisplay { return local }
+        if let focusedPID, let first = local.first, first.pid != focusedPID { return local }
         return Array(local.dropFirst())
     }
 

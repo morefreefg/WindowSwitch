@@ -4,7 +4,7 @@
 - `SwitchController` owns a switching session, uses shared per-window recency, filters before optional app grouping, and fills static previews after the panel becomes visible. While the list is open it watches the on-screen window set every 200 ms; windows already shown keep their places, new ones are appended, and recency reordering waits for the next open.
 - High preview quality scales the visible thumbnail box by the display backing scale. Low previews cap the longest edge at 200 pixels. Idle-time prefetching fills up to 32 previews sequentially per round, with missing or undersized images first and a resource check between captures. Foreground and background captures share the WindowServer backend, with ScreenCaptureKit as a fallback. Newer prefetched images are applied before the panel appears. An open panel shows cached previews unchanged and only fills windows that have none (cross-faded from empty).
 - Background metadata maintenance is event-driven, with a slow fallback sweep. Preloading is user-configurable and backs off under load, heat, low-power mode, or user activity.
-- Quick switches prepare their window snapshot on key-down, then recheck its focus/inventory revision on commit. A visible target can reuse its exact cached AX handle; native activation still validates the live PID/window ID. Each submitted switch remembers its own Tab release (up to a 250 ms fallback), so a subsequent Tab press cannot extend the previous switch's wait. A Tab key-up without a key-down since the modifier went down is still treated as a quick tap, as a fallback.
+- Cached lists reconcile the current foreground PID and exact focused window before applying recency. After a verified switch, the destination leads and the observed origin follows. Quick switches prepare their window snapshot on key-down, then recheck its focus/inventory revision on commit. A visible target can reuse its exact cached AX handle; native activation still validates the live PID/window ID. Each submitted switch remembers its own Tab release (up to a 250 ms fallback), so a subsequent Tab press cannot extend the previous switch's wait. A Tab key-up without a key-down since the modifier went down is still treated as a quick tap, as a fallback.
 - `DockFocusController` uses a dedicated event-tap thread. A single click owns the restore, exact-window activation, and readback sequence. Other displays' visible windows are protected when hidden/minimized siblings are restored. Drag and long-press gestures are passed through.
 - `NativeCaptureBridge` and `NativeSpaceBridge` check optional system symbols. The capture bridge falls back to ScreenCaptureKit. The Space bridge retains the applicable third-party MIT notice.
 - The close affordance uses a system symbol. App artwork is in `Design/`.
@@ -16,9 +16,14 @@ Run `Scripts/test.sh` for pure selection, recency, grouping, filtering, resource
 An already-authorized build can run disposable real-window fixtures:
 
 ```sh
+./Scripts/verify-functional.sh --app /absolute/path/WindowSwitch.app --focus-only
 ./Scripts/verify-functional.sh --app /absolute/path/WindowSwitch.app --quick-switch
 ./Scripts/verify-functional.sh --app /absolute/path/WindowSwitch.app --extended --focus-stress
 ```
+
+The focus-only suite disables previews for the test session. It exercises two app identities and three-window recency, including missed notifications, queued taps, optional app grouping, and switching between displays. The socket roundtrip checks frontmost PID, AX window ID and the compositor stacking order of overlapping fixture windows. Its report includes median and 95th-percentile timings.
+
+Quick-switch diagnostics measure submission to verified completion, queueing, waiting for Tab release, the activation request, focus readback and retry waits. The request includes setting the process frontmost, posting window events, and raising the exact window. The report also measures elapsed time from the final native set-front return through completion, and from verification through publication on the main actor. The AX read is part of readback. These nested intervals should be interpreted separately.
 
 The verifier restricts mutations to the exact bundle path, PID, and random session of its temporary fixtures. It does not operate on user documents or change Dock/TCC settings. `--dock-input` additionally permits one strictly hit-tested click on that session's real Dock icon, using a temporary event tap. Reports and screenshots are written to temporary storage and are not part of the repository.
 

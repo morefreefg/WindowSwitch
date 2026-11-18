@@ -110,6 +110,8 @@ actor WindowService {
     private var captureCount = 0
     private var closedWindowIDs: [UInt32: Int32] = [:]
     private var recency = WindowRecency()
+    private var pendingFocusObservation: Task<Void, Never>?
+    private var verifyingFocus = 0
 
     func focusDiagnostics() -> [String: String] { lastFocusEvidence }
     func captureDiagnostics(windowID: UInt32) -> [String: String] { captureEvidence[windowID] ?? [:] }
@@ -138,20 +140,28 @@ actor WindowService {
         inventoryPublishRevision &+= 1
     }
 
-    func frontmostWindowID() async -> UInt32? {
-        guard let pid = await MainActor.run(body: { NSWorkspace.shared.frontmostApplication?.processIdentifier }) else { return nil }
-        return readAndRecordFocusedWindow(pid: pid)
-    }
-
-    private func recordForegroundWindow(pid: Int32) async {
-        guard await MainActor.run(body: { NSWorkspace.shared.frontmostApplication?.processIdentifier }) == pid else { return }
-        _ = readAndRecordFocusedWindow(pid: pid)
-    }
-
-    private func readAndRecordFocusedWindow(pid: Int32) -> UInt32? {
-        guard let id = focusedID(pid: pid) else { return nil }
+    func frontmostWindowID(expectedPID: Int32? = nil) -> UInt32? {
+        let observed = foregroundIdentity()
+        guard !Task.isCancelled, let pid = observed.pid, let id = observed.id,
+              expectedPID == nil || expectedPID == pid else { return nil }
         recordFocus(pid: pid, windowID: id)
         return id
+    }
+
+    // Activation and AX notifications can arrive before the destination has a key window.
+    // Re-sample the live foreground on the next beats, coalescing obsolete notifications.
+    private func focusDidChange(expectedPID: Int32? = nil) {
+        guard verifyingFocus == 0 else { return }
+        pendingFocusObservation?.cancel()
+        pendingFocusObservation = Task { [weak self] in
+            for delay in [0, 35, 100] {
+                if delay > 0 {
+                    do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
+                }
+                guard !Task.isCancelled, let self else { return }
+                if await self.frontmostWindowID(expectedPID: expectedPID) != nil { return }
+            }
+        }
     }
 
     private func focusedID(pid: Int32) -> UInt32? {
@@ -193,7 +203,7 @@ actor WindowService {
         let signals = await WindowWorkspaceSignals { [weak self] pid, activated in
             Task {
                 await self?.workspaceDidChange(pid: pid)
-                if activated, let pid { await self?.recordForegroundWindow(pid: pid) }
+                if activated { await self?.focusDidChange(expectedPID: pid) }
             }
         }
         guard maintenanceGeneration == token else { await signals.stop(); return }
@@ -221,6 +231,7 @@ actor WindowService {
 
     func stopBackgroundMaintenance() async {
         maintenanceGeneration = UUID()
+        pendingFocusObservation?.cancel(); pendingFocusObservation = nil
         maintenance?.cancel(); maintenance = nil
         maintenanceTicker?.cancel(); maintenanceTicker = nil
         delayedInventoryWake?.cancel(); delayedInventoryWake = nil
@@ -359,7 +370,7 @@ actor WindowService {
             Task {
                 if let closedID { await self?.forgetWindow(pid: pid, id: closedID) }
                 await self?.invalidateInventory(pid: pid)
-                if focusChanged { await self?.recordForegroundWindow(pid: pid) }
+                if focusChanged { await self?.focusDidChange(expectedPID: pid) }
             }
         }
         workloadScans += 1; workloadAXBatches += batch.batchCalls; workloadAXFallbacks += batch.fallbackCalls
@@ -401,9 +412,10 @@ actor WindowService {
         return batch.complete
     }
 
-    func discover(_ query: WindowQuery, cachedOnly: Bool = false) async -> [WindowItem] {
+    func discover(_ query: WindowQuery, cachedOnly: Bool = false, focusAlreadySampled: Bool = false) async -> [WindowItem] {
         let began = Date()
-        if !cachedOnly, let currentPID = query.currentPID { await recordForegroundWindow(pid: currentPID) }
+        // Cached metadata can be valid while the last focus notification was missed.
+        if !focusAlreadySampled && verifyingFocus == 0 { _ = frontmostWindowID() }
         var applications = await cachedWorkspaceSnapshot(currentPID: query.currentPID, ownPID: query.ownPID)
         let workspaceMS = Date().timeIntervalSince(began) * 1000
         guard !Task.isCancelled else { return [] }
@@ -769,10 +781,13 @@ actor WindowService {
     /// The activation API acknowledges a request before the target necessarily owns focus.
     /// Read back both identities, and retry only while the original window still owns focus.
     func focusSwitcherTarget(_ item: WindowItem, quick: Bool, originPID: Int32? = nil,
-                             originID: UInt32? = nil) async -> Bool {
+                             originID: UInt32? = nil) async -> (accepted: Bool, evidence: [String: String]) {
         guard let targetID = item.windowID, item.documentURL == nil,
-              !item.id.hasPrefix("app:") || singleWindowFocus else { return await perform(.focus, on: item) }
-        return await verifyFocus(of: item, originPID: originPID, originID: originID) { service, attempt in
+              !item.id.hasPrefix("app:") || singleWindowFocus else {
+            let accepted = await perform(.focus, on: item)
+            return (accepted, lastFocusEvidence)
+        }
+        let accepted = await verifyFocus(of: item, originPID: originPID, originID: originID) { service, attempt in
             if quick && attempt == 1 {
                 _ = await service.requestQuickFocus(item)
             } else if attempt == 2 && service.singleWindowFocus && item.isOnScreen && !item.isMinimized && !item.isHidden {
@@ -782,6 +797,7 @@ actor WindowService {
                 service.lastFocusEvidence.merge(result.evidence, uniquingKeysWith: { _, new in new })
             } else { _ = await service.perform(.focus, on: item, recordAccepted: false) }
         }
+        return (accepted, lastFocusEvidence)
     }
 
     func verifyFocus(of item: WindowItem, originPID: Int32?, originID: UInt32?,
@@ -789,7 +805,12 @@ actor WindowService {
         guard let targetID = item.windowID else { return false }
         let origin: (pid: Int32?, id: UInt32?)
         if let originPID { origin = (originPID, originID) }
-        else { origin = await foregroundIdentity() }
+        else {
+            let observed = foregroundIdentity()
+            origin = (observed.pid, observed.id)
+        }
+        pendingFocusObservation?.cancel()
+        verifyingFocus += 1
         let previousTargetWindow = origin.pid == item.pid ? nil : recency.lastFocusedWindowID(pid: item.pid)
         let start = ContinuousClock.now
         func userInput() -> [UInt32] {
@@ -800,26 +821,52 @@ actor WindowService {
         let input = userInput()
         var attempts = 0
         var confirmed = false
+        var requestMS = 0.0, readMS = 0.0, readAXMS = 0.0, settleMS = 0.0
+        var nativeTimes: [String: Double] = [:]
         defer {
+            verifyingFocus -= 1
+            if !confirmed && maintenance != nil { focusDidChange() }
+            for (key, value) in nativeTimes { lastFocusEvidence[key] = String(value) }
+            lastFocusEvidence["requestMS"] = String(requestMS)
+            lastFocusEvidence["readbackMS"] = String(readMS)
+            lastFocusEvidence["readbackAXMS"] = String(readAXMS)
+            lastFocusEvidence["settleMS"] = String(settleMS)
+            lastFocusEvidence["verificationEndedAt"] = String(CACurrentMediaTime())
             lastFocusEvidence["focusAttempts"] = String(attempts)
             lastFocusEvidence["focusConfirmed"] = String(confirmed)
         }
         for attempt in 1...2 {
             guard !Task.isCancelled, !isWindowMissing(item) else { return false }
             attempts = attempt
+            lastFocusEvidence = [:]
+            let requestStart = CACurrentMediaTime()
             await attemptFocus(self, attempt)
-
-            var observed = await foregroundIdentity()
+            requestMS += (CACurrentMediaTime() - requestStart) * 1000
+            for key in ["setFrontMS", "postMS", "raiseMS"] {
+                nativeTimes[key, default: 0] += Double(lastFocusEvidence[key] ?? "") ?? 0
+            }
+            var readStart = CACurrentMediaTime()
+            var observed = foregroundIdentity()
+            readMS += (CACurrentMediaTime() - readStart) * 1000
+            readAXMS += observed.axMS
             for delay in [15, 35] {
                 if observed.pid == item.pid && observed.id == targetID { break }
                 if let pid = observed.pid, pid != origin.pid && pid != item.pid { return false }
+                let settleStart = CACurrentMediaTime()
                 do { try await Task.sleep(for: .milliseconds(delay)) } catch { return false }
-                observed = await foregroundIdentity()
+                settleMS += (CACurrentMediaTime() - settleStart) * 1000
+                readStart = CACurrentMediaTime()
+                observed = foregroundIdentity()
+                readMS += (CACurrentMediaTime() - readStart) * 1000
+                readAXMS += observed.axMS
             }
             lastFocusEvidence["observedPID"] = observed.pid.map(String.init) ?? "none"
             lastFocusEvidence["observedWindowID"] = observed.id.map(String.init) ?? "none"
             if observed.pid == item.pid && observed.id == targetID {
                 confirmed = true
+                if let pid = origin.pid, let id = origin.id, closedWindowIDs[id] != pid, userInput() == input {
+                    recordFocus(pid: pid, windowID: id)
+                }
                 recordFocus(pid: item.pid, windowID: targetID)
                 return true
             }
@@ -834,11 +881,13 @@ actor WindowService {
         return false
     }
 
-    private func foregroundIdentity() async -> (pid: Int32?, id: UInt32?) {
-        let pid = await MainActor.run { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+    private func foregroundIdentity() -> (pid: Int32?, id: UInt32?, axMS: Double) {
+        let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let axStart = CACurrentMediaTime()
         let id = pid.flatMap { focusedID(pid: $0) }
-        let after = await MainActor.run { NSWorkspace.shared.frontmostApplication?.processIdentifier }
-        return pid == after ? (pid, id) : (after, nil)
+        let axMS = (CACurrentMediaTime() - axStart) * 1000
+        let after = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        return (after, pid == after ? id : nil, axMS)
     }
 
     /// Visible quick-switch targets already carry a PID/window ID from the compositor.

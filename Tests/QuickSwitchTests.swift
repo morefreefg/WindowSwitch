@@ -9,27 +9,25 @@ import Testing
         WindowItem(id: "\(id)", windowID: id, pid: Int32(id), appName: "App", bundleID: "test.\(id)",
                    title: "Window", frame: frame, isMinimized: minimized, isHidden: hidden, isOnScreen: onScreen)
     }
-    @Test func twoApplicationsToggleByFrontToBackOrder() {
+    @Test func focusesMostRecentOtherWindowWhenCurrentWindowIsLast() {
         let a = item(1, frame: left), b = item(2, frame: left), c = item(3, frame: left)
-        #expect(QuickSwitchPolicy.target([a, b, c], screen: left, screens: [left, right])?.id == b.id)
-        #expect(QuickSwitchPolicy.target([b, a, c], screen: left, screens: [left, right])?.id == a.id)
-        #expect(QuickSwitchPolicy.target([a, b, c], screen: left, screens: [left, right])?.id == b.id)
+        let targets = QuickSwitchPolicy.orderedTargets([b, c, a], focusedWindowID: a.windowID, focusedPID: a.pid)
+        #expect(targets.map(\.id) == [b.id, c.id])
     }
     @Test func pointerDisplayWinsOverGlobalForegroundAndCrossSpaceSettings() {
         let elsewhere = item(1, frame: left), a = item(2, frame: right), b = item(3, frame: right)
         let otherSpace = item(4, frame: right, onScreen: false)
         let hidden = item(5, frame: right, hidden: true), minimized = item(6, frame: right, minimized: true)
-        #expect(QuickSwitchPolicy.target([elsewhere, otherSpace, hidden, minimized, a, b], screen: right,
-                                        screens: [left, right])?.id == b.id)
+        let local = QuickSwitchPolicy.candidates([elsewhere, otherSpace, hidden, minimized, a, b],
+                                                 screen: right, screens: [left, right])
+        #expect(local.map(\.id) == [a.id, b.id])
+        #expect(QuickSwitchPolicy.orderedTargets(local, focusedWindowID: elsewhere.windowID,
+                                                focusedPID: elsewhere.pid).first?.id == a.id)
     }
     @Test func straddlingWindowBelongsToDisplayWithLargestIntersection() {
         let spanning = item(1, frame: CGRect(x: 1800, y: 0, width: 900, height: 800))
         let a = item(2, frame: left), b = item(3, frame: left)
         #expect(QuickSwitchPolicy.candidates([spanning, a, b], screen: left, screens: [left, right]).map(\.id) == [a.id, b.id])
-    }
-    @Test func noRunnerUpDoesNotJumpToAnotherDisplay() {
-        #expect(QuickSwitchPolicy.target([item(1, frame: left), item(2, frame: right)], screen: left,
-                                        screens: [left, right]) == nil)
     }
     @Test func focusOnAnotherDisplayTargetsPointerDisplaysMostRecentWindow() {
         let a = item(2, frame: right), b = item(3, frame: right)
@@ -41,6 +39,12 @@ import Testing
         // Unknown focus, or an unlisted window of the first app (a palette), keeps the runner-up.
         #expect(QuickSwitchPolicy.orderedTargets([a, b], focusedWindowID: nil, focusedPID: nil).map(\.id) == [b.id])
         #expect(QuickSwitchPolicy.orderedTargets([a, b], focusedWindowID: 99, focusedPID: 2).map(\.id) == [b.id])
+        // A transient AX miss must not discard the previous window when its owner
+        // is known to differ from the still-frontmost process.
+        #expect(QuickSwitchPolicy.orderedTargets([a, b], focusedWindowID: nil, focusedPID: 3).map(\.id) == [a.id, b.id])
+        #expect(QuickSwitchPolicy.orderedTargets([a, b], focusedWindowID: nil, focusedPID: 2).map(\.id) == [b.id])
+        #expect(QuickSwitchPolicy.orderedTargets([a], focusedWindowID: 99, focusedPID: a.pid,
+                                                 focusOnOtherDisplay: true).map(\.id) == [a.id])
         // A lone window on the pointer display is reachable when focus is elsewhere.
         #expect(QuickSwitchPolicy.orderedTargets([a], focusedWindowID: 1, focusedPID: 1).map(\.id) == [a.id])
         #expect(QuickSwitchPolicy.orderedTargets([a], focusedWindowID: 2, focusedPID: 2).isEmpty)
@@ -61,9 +65,11 @@ import Testing
         var recency = WindowRecency()
         recency.record(pid: a.pid, windowID: 1)
         recency.record(pid: b.pid, windowID: 2)
-        #expect(QuickSwitchPolicy.target(recency.ordered(staleOrder), screen: left, screens: [left, right])?.id == a.id)
+        #expect(QuickSwitchPolicy.orderedTargets(recency.ordered(staleOrder), focusedWindowID: b.windowID,
+                                                focusedPID: b.pid).first?.id == a.id)
         recency.record(pid: a.pid, windowID: 1)
-        #expect(QuickSwitchPolicy.target(recency.ordered(staleOrder), screen: left, screens: [left, right])?.id == b.id)
+        #expect(QuickSwitchPolicy.orderedTargets(recency.ordered(staleOrder), focusedWindowID: a.windowID,
+                                                focusedPID: a.pid).first?.id == b.id)
         recency.record(pid: c.pid, windowID: 3)
         #expect(recency.ordered(staleOrder).map(\.id) == [c.id, a.id, b.id])
     }

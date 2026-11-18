@@ -57,7 +57,7 @@ private func describe(_ windows: [WindowItem]) -> String {
     private var quickQuery: WindowQuery?
     private var quickScreenBounds = CGRect.zero
     private var quickDisplayBounds: [CGRect] = []
-    private var quickFocusWork: Task<Void, Never>?
+    private(set) var quickFocusWork: Task<UInt32?, Never>?
     private struct QuickPreparation {
         let windows: [WindowItem]
         let focusedWindowID: UInt32?
@@ -372,7 +372,7 @@ private func describe(_ windows: [WindowItem]) -> String {
             quickPreparation = Task {
                 // A following gesture can start immediately, but its snapshot
                 // must observe the activation already submitted by its predecessor.
-                await preceding?.value
+                _ = await preceding?.value
                 guard !Task.isCancelled else { return nil }
                 return await Self.prepareQuickSwitch(service: service, query: local)
             }
@@ -406,10 +406,10 @@ private func describe(_ windows: [WindowItem]) -> String {
 
     private static func prepareQuickSwitch(service: WindowService, query: WindowQuery) async -> QuickPreparation? {
         let pidBefore = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        let revisionBefore = await service.discoveryStatus().revision
         let focused = await service.frontmostWindowID()
+        let revisionBefore = await service.discoveryStatus().revision
         guard !Task.isCancelled else { return nil }
-        let windows = await service.discover(query, cachedOnly: true)
+        let windows = await service.discover(query, cachedOnly: true, focusAlreadySampled: true)
         guard !Task.isCancelled else { return nil }
         let revision = await service.discoveryStatus().revision
         let focusedPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
@@ -629,7 +629,7 @@ private func describe(_ windows: [WindowItem]) -> String {
 
     func resetInput() { resetDirectShortcut(); cancel(); suppressedKeys.removeAll() }
 
-    func waitForQuickSwitch() async { await quickFocusWork?.value }
+    func waitForQuickSwitch() async { _ = await quickFocusWork?.value }
     var panelIsVisible: Bool { panel?.isVisible == true }
     var panelAlpha: Double { Double(panel?.alphaValue ?? 0) }
     var preloadedThumbnailCount: Int { preloadedThumbnails.count }
@@ -711,12 +711,14 @@ private func describe(_ windows: [WindowItem]) -> String {
             // or starting another one must not cancel an accepted switch.
             quickPreparation = nil; sessionTabRelease = nil
             cancel()
+            let submitted = CACurrentMediaTime()
             // Serialize taps so the next query observes the preceding activation.
             // Starting a new gesture must not cancel an activation already submitted.
             quickFocusWork = Task { [weak self] in
-                await preceding?.value
-                guard let self else { return }
+                _ = await preceding?.value
+                guard let self else { return nil }
                 let began = Date()
+                let queueMS = (CACurrentMediaTime() - submitted) * 1000
                 var prepared = await preparation?.value
                 let releaseWaitBegan = CACurrentMediaTime()
                 await Self.waitForTabRelease(release)
@@ -727,7 +729,7 @@ private func describe(_ windows: [WindowItem]) -> String {
                 if !reusedPreparation {
                     prepared = await Self.prepareQuickSwitch(service: service, query: query)
                 }
-                guard let prepared else { return }
+                guard let prepared else { return nil }
                 let focused = prepared.focusedWindowID, focusedPID = prepared.focusedPID
                 let windows = prepared.windows
                 clearClosedPreviews(await service.knownClosedWindowIDs())
@@ -737,7 +739,12 @@ private func describe(_ windows: [WindowItem]) -> String {
                 lastQuickEvidence["preparedSnapshotReused"] = "\(reusedPreparation)"
                 lastQuickEvidence["tabReleaseWaitMS"] = "\(releaseWaitMS)"
                 lastQuickEvidence["observedFocusedID"] = focused.map(String.init) ?? "none"
-                var candidates = QuickSwitchPolicy.orderedTargets(local, focusedWindowID: focused, focusedPID: focusedPID)
+                let focusOnOtherDisplay = focused.map { id in
+                    windows.contains { $0.windowID == id && $0.isOnScreen && !$0.isMinimized && !$0.isHidden }
+                        && !candidatesOnScreen.contains { $0.windowID == id }
+                } ?? false
+                var candidates = QuickSwitchPolicy.orderedTargets(local, focusedWindowID: focused, focusedPID: focusedPID,
+                                                                  focusOnOtherDisplay: focusOnOtherDisplay)
                 var scope = "pointer-display"
                 if candidates.isEmpty {
                     let visible = preferences.oneWindowPerApp ? WindowGrouping.onePerApplication(windows) : windows
@@ -746,12 +753,13 @@ private func describe(_ windows: [WindowItem]) -> String {
                 }
                 guard let firstTarget = candidates.first else {
                     switchLog.notice("quick tap: nothing to switch to focused=\(focused.map(String.init) ?? "none", privacy: .public) pointerDisplay=[\(describe(local), privacy: .public)]")
-                    return
+                    return nil
                 }
                 var target = firstTarget, accepted = false
+                var focusEvidence: [String: String] = [:]
                 for candidate in candidates.prefix(8) {
                     target = candidate
-                    accepted = await service.focusSwitcherTarget(target, quick: true, originPID: focusedPID, originID: focused)
+                    (accepted, focusEvidence) = await service.focusSwitcherTarget(target, quick: true, originPID: focusedPID, originID: focused)
                     if accepted { break }
                     guard await service.isWindowMissing(target) else { break }
                     if let id = target.windowID {
@@ -762,15 +770,28 @@ private func describe(_ windows: [WindowItem]) -> String {
                 }
                 lastQuickEvidence["targetID"] = target.windowID.map(String.init)
                 lastQuickEvidence["focusAccepted"] = "\(accepted)"
-                lastQuickEvidence.merge(await service.focusDiagnostics(), uniquingKeysWith: { _, new in new })
-                switchLog.notice("quick tap: \(scope, privacy: .public) focused=\(focused.map(String.init) ?? "none", privacy: .public) target=\(describe([target]), privacy: .public) accepted=\(accepted, privacy: .public) ms=\(Int(Date().timeIntervalSince(began) * 1000), privacy: .public)")
+                lastQuickEvidence.merge(focusEvidence, uniquingKeysWith: { _, new in new })
                 lastQuickEvidence["queryAndActivationMS"] = "\(Date().timeIntervalSince(began) * 1000)"
+                lastQuickEvidence["queueMS"] = String(queueMS)
+                let completed = CACurrentMediaTime()
+                if let frontReturned = lastQuickEvidence.removeValue(forKey: "frontReturnedAt").flatMap(Double.init) {
+                    lastQuickEvidence["afterSetFrontMS"] = String((completed - frontReturned) * 1000)
+                }
+                if let verified = lastQuickEvidence.removeValue(forKey: "verificationEndedAt").flatMap(Double.init) {
+                    lastQuickEvidence["publishMS"] = String((completed - verified) * 1000)
+                }
+                lastQuickEvidence["submitToResultMS"] = String((completed - submitted) * 1000)
+                let stages = ["queueMS", "tabReleaseWaitMS", "requestMS", "setFrontMS", "postMS", "raiseMS", "readbackMS", "readbackAXMS", "settleMS", "publishMS", "afterSetFrontMS", "submitToResultMS"].map {
+                    "\($0)=\(Int(Double(lastQuickEvidence[$0] ?? "") ?? 0))"
+                }.joined(separator: " ")
+                switchLog.notice("quick tap: \(scope, privacy: .public) focused=\(focused.map(String.init) ?? "none", privacy: .public) target=\(describe([target]), privacy: .public) accepted=\(accepted, privacy: .public) ms=\(Int(Date().timeIntervalSince(began) * 1000), privacy: .public) \(stages, privacy: .public)")
                 if !accepted {
                     let stage = lastQuickEvidence["activationStage"] ?? "unknown"
                     let attempts = lastQuickEvidence["focusAttempts"] ?? "0"
                     switchLog.notice("quick focus unconfirmed stage=\(stage, privacy: .public) attempts=\(attempts, privacy: .public)")
                     message = "当前无法切换到该窗口"
                 }
+                return accepted ? target.windowID : nil
             }
             return
         }
@@ -787,18 +808,19 @@ private func describe(_ windows: [WindowItem]) -> String {
         // (fast users press again immediately); the next quick tap waits for it.
         let preceding = quickFocusWork
         quickFocusWork = Task { [weak self] in
-            await preceding?.value
-            guard let self else { return }
+            _ = await preceding?.value
+            guard let self else { return nil }
             await Self.waitForTabRelease(release)
             if wasNative { try? await Task.sleep(for: .milliseconds(50)) }
             let began = Date()
-            let accepted = await service.focusSwitcherTarget(target, quick: false)
+            let (accepted, _) = await service.focusSwitcherTarget(target, quick: false)
             switchLog.notice("list commit: target=\(describe([target]), privacy: .public) accepted=\(accepted, privacy: .public) ms=\(Int(Date().timeIntervalSince(began) * 1000), privacy: .public)")
             if !accepted {
                 message = "窗口已关闭或当前无法切换"
             } else if openDefault {
                 _ = await service.perform(.newWindow, on: target)
             }
+            return accepted ? target.windowID : nil
         }
     }
 
