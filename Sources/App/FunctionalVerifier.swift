@@ -583,26 +583,34 @@ private final class FixtureVerificationRun {
         let retryEvidence = await controller.service.focusDiagnostics()
         record("exact-focus-retries-same-window-once",
                retry && retryEvidence["focusAttempts"] == "2" && focusedWindowID(pid: secondPID) == secondID ? "passed" : "failed")
-        _ = await act(.focus, on: first)
         if let sibling = (await discover(primaryPID)).first(where: { $0.title == "WSFixture_C" }) {
+            let external = sentinelService
+            let prepared = await external.focusSwitcherTarget(first, quick: true)
             let stolen = await controller.service.verifyFocus(of: second, originPID: primaryPID, originID: firstID) { service, attempt in
-                _ = await service.perform(.focus, on: attempt == 1 ? sibling : second)
+                if attempt == 1 {
+                    _ = await external.focusSwitcherTarget(sibling, quick: true, originPID: primaryPID, originID: firstID)
+                } else { _ = await service.perform(.focus, on: second) }
             }
+            let injected = await external.focusDiagnostics()["focusConfirmed"] == "true"
             let evidence = await controller.service.focusDiagnostics()
+            let actual = focusedWindowID(pid: primaryPID)
             record("exact-focus-leaves-new-user-window-alone",
-                   !stolen && evidence["focusAttempts"] == "1" && focusedWindowID(pid: primaryPID) == sibling.windowID ? "passed" : "failed")
-        }
-        if let sibling = (await discover(primaryPID)).first(where: { $0.title == "WSFixture_C" }) {
-            _ = await controller.service.perform(.focus, on: sibling)
-            _ = await controller.service.frontmostWindowID()
-            _ = await act(.focus, on: second, using: sentinelService)
+                   prepared.accepted && injected && !stolen && evidence["focusAttempts"] == "1" && actual == sibling.windowID ? "passed" : "failed",
+                   evidence: ["originConfirmed": String(prepared.accepted), "interveningFocusConfirmed": String(injected),
+                              "attempts": evidence["focusAttempts"] ?? "0", "expectedID": String(sibling.windowID ?? 0),
+                              "observedID": String(actual ?? 0)])
+            let previous = await controller.service.focusSwitcherTarget(sibling, quick: true)
+            let source = await external.focusSwitcherTarget(second, quick: true)
             let corrected = await controller.service.verifyFocus(of: first, originPID: secondPID, originID: secondID) { service, attempt in
-                _ = await service.perform(.focus, on: attempt == 1 ? sibling : first)
+                if attempt == 1 {
+                    _ = await external.focusSwitcherTarget(sibling, quick: true, originPID: secondPID, originID: secondID)
+                } else { _ = await service.perform(.focus, on: first) }
             }
-            let evidence = await controller.service.focusDiagnostics()
+            let correction = await controller.service.focusDiagnostics()
             record("exact-focus-corrects-apps-previous-window",
-                   corrected && evidence["focusAttempts"] == "2" && focusedWindowID(pid: primaryPID) == firstID ? "passed" : "failed")
-        }
+                   previous.accepted && source.accepted && corrected && correction["focusAttempts"] == "2" && focusedWindowID(pid: primaryPID) == firstID ? "passed" : "failed",
+                   evidence: correction)
+        } else { record("exact-focus-third-window-setup", "blocked") }
         _ = await act(.focus, on: second, using: sentinelService)
         _ = await act(.focus, on: first)
         _ = await wait { self.focusedWindowID(pid: primaryPID) == firstID }

@@ -812,6 +812,10 @@ actor WindowService {
         pendingFocusObservation?.cancel()
         verifyingFocus += 1
         let previousTargetWindow = origin.pid == item.pid ? nil : recency.lastFocusedWindowID(pid: item.pid)
+        func permitsRetry(pid: Int32?, id: UInt32?) -> Bool {
+            guard let id else { return false }
+            return (pid == origin.pid && id == origin.id) || (pid == item.pid && id == previousTargetWindow)
+        }
         let start = ContinuousClock.now
         func userInput() -> [UInt32] {
             [.leftMouseDown, .rightMouseDown, .keyDown].map {
@@ -849,9 +853,13 @@ actor WindowService {
             var observed = foregroundIdentity()
             readMS += (CACurrentMediaTime() - readStart) * 1000
             readAXMS += observed.axMS
+            var sawUnrelatedWindow = false
             for delay in [15, 35] {
                 if observed.pid == item.pid && observed.id == targetID { break }
                 if let pid = observed.pid, pid != origin.pid && pid != item.pid { return false }
+                if observed.id != nil && !permitsRetry(pid: observed.pid, id: observed.id) {
+                    sawUnrelatedWindow = true
+                }
                 let settleStart = CACurrentMediaTime()
                 do { try await Task.sleep(for: .milliseconds(delay)) } catch { return false }
                 settleMS += (CACurrentMediaTime() - settleStart) * 1000
@@ -871,12 +879,9 @@ actor WindowService {
                 return true
             }
             // A late AX reply or an intervening click must not steal focus back.
-            let stillAtOrigin = origin.id != nil && observed.pid == origin.pid && observed.id == origin.id
-            // Some apps first activate their previous key window. Only correct that
-            // known sibling, and only when the user has made no intervening input.
-            let atPreviousTarget = previousTargetWindow != nil && observed.pid == item.pid && observed.id == previousTargetWindow
-            guard attempt == 1, start.duration(to: .now) < .seconds(2.5),
-                  stillAtOrigin || atPreviousTarget, userInput() == input else { return false }
+            // A transient third window also suppresses a retry if focus subsequently returns to the origin.
+            guard attempt == 1, !sawUnrelatedWindow, start.duration(to: .now) < .seconds(2.5),
+                  permitsRetry(pid: observed.pid, id: observed.id), userInput() == input else { return false }
         }
         return false
     }
