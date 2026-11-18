@@ -26,23 +26,28 @@ def remove(path, apply):
         subprocess.run(["gh", "api", "--method", "DELETE", f"{API}/{path}"], check=True)
 
 
-def prune_artifacts(apply):
+def superseded_artifacts(completed, published_build):
+    # Upload IDs reflect when a runner finished uploading. Parallel runs can finish out of order.
+    successful = [(number, artifact_id) for number, artifact_id, success in completed
+                  if success and number >= published_build]
+    keep = max(successful, default=None)
+    return [artifact_id for number, artifact_id, _ in completed
+            if number < published_build or (keep is not None and number <= keep[0] and artifact_id != keep[1])]
+
+
+def prune_artifacts(apply, published_build):
     pages = api("actions/artifacts?name=WindowSwitch-universal&per_page=100", pages=True)
-    artifacts = [a for page in pages for a in page["artifacts"]
-                 if a["name"] == "WindowSwitch-universal" and not a["expired"] and a.get("workflow_run")]
-    keep = None
-    for artifact in sorted(artifacts, key=lambda a: a["id"], reverse=True):
-        run = api(f"actions/runs/{artifact['workflow_run']['id']}")
-        if run["path"] != ".github/workflows/build.yml" or run["status"] != "completed":
-            continue
-        if run["event"] == "pull_request":
-            continue
-        if keep is None:
-            if run["conclusion"] == "success":
-                keep = artifact["id"]
-            continue
-        remove(f"actions/artifacts/{artifact['id']}", apply)
-    print(f"Retained build artifact {keep}")
+    completed = []
+    for page in pages:
+        for artifact in page["artifacts"]:
+            if artifact["name"] != "WindowSwitch-universal" or artifact["expired"] or not artifact.get("workflow_run"):
+                continue
+            run = api(f"actions/runs/{artifact['workflow_run']['id']}")
+            if (run["path"] == ".github/workflows/build.yml" and run["status"] == "completed"
+                    and run["event"] != "pull_request"):
+                completed.append((run["run_number"], artifact["id"], run["conclusion"] == "success"))
+    for artifact_id in superseded_artifacts(completed, published_build):
+        remove(f"actions/artifacts/{artifact_id}", apply)
 
 
 def version(tag):
@@ -82,6 +87,7 @@ def prune_releases(apply):
                 continue
             remove(f"releases/{release['id']}", apply)
     print(f"Retained {tag}")
+    return int(update["buildVersion"])
 
 
 if __name__ == "__main__":
@@ -90,5 +96,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if os.environ.get("GITHUB_REPOSITORY", REPO) != REPO:
         raise SystemExit("Unexpected repository")
-    prune_artifacts(args.apply)
-    prune_releases(args.apply)
+    published_build = prune_releases(args.apply)
+    prune_artifacts(args.apply, published_build)
